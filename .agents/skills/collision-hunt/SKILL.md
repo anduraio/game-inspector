@@ -1,15 +1,9 @@
 ---
 name: collision-hunt
-description: Find places where a character's body is drawn inside the world — the track bed, the sleepers, the rails, the kerbs, the props and the trains — by walking every step of a move with the game's own scan engine, framing each hit with game-inspector, shooting before/after into a gitignored folder, then fixing the cause and re-scanning. Use when a body looks buried in or cut through by geometry, or when asked to find collisions like the one where the rails crossed the baby.
+description: Find places where the character's body is drawn inside the world in All Aboard, Life — the track bed, the sleepers, the rails, the kerbs, the props and the trains — by walking every step of a move with scripts/collide.js, framing each hit with game-inspector, shooting before/after into a gitignored folder, then fixing the cause and re-scanning. Use when a body looks buried in or cut through by geometry, when the audit's ground or corpse checks fail, or when asked to find other collisions like the one where the rails crossed the baby.
 ---
 
 # Collision hunt
-
-> A copy of a skill that belongs with the game it was written for: that repo
-> holds the scan engine (`scripts/collide.js`) this drives, and the gitignored
-> shots it writes. It is copied here so anyone pointing this inspector at that
-> game has the workflow to hand. Everything is parameterised — `GAME_URL` for the
-> page, `GAME_INSPECTOR` for this repo.
 
 The body moves in two dimensions — x and z, with y decided by the surface it is
 standing on — and until recently nothing tested its box against the geometry it
@@ -18,6 +12,35 @@ while the art draws its surfaces at 0.10 (lawn) up to 0.57 (rail heads), so on a
 lane the shins were inside the ballast and the rails crossed the body at a third
 of an adult's height and more than half of the baby's. It was found by flying a
 camera at it, not by anything that ran. This makes it run.
+
+## The per-move loop
+
+The way you would hunt it by hand — play, stop, look, photograph, write down what
+you saw, play on — with the stopping, the looking, the photographing and the note
+made by the same code every time, so two runs are comparable and nothing depends
+on keeping your nerve:
+
+```
+node .agents/skills/collision-hunt/scripts/hunt.mjs walk [--ages 1,34,75] [--rows 8]
+```
+
+Every move is halted, every 1/120s step of it is measured, the frame kept for a
+move is the one at its worst moment, and one line per move goes into
+`collision-shots/walk.log`:
+
+```
+age 1 (baby) | move 1 | row 3 -> 4 | ground 0.41 of 0.41 | INSIDE Mesh/BoxGeometry 0.14 deep (top 0.57) at 0,0.49,-7.02 | walk-a1-m01.png
+```
+
+`ground 0.41 of 0.41` is the control on every line: where the body is against where
+the row says it belongs. Before the ground fix that read `0 of 0.41` on every lane
+row. `--shots all` keeps a frame for every move — the photographic record — `hits`
+keeps only the ones with something inside the body, `none` the log alone.
+`--headed` walks it in a window you can watch.
+
+## The sweep: every row, every age
+
+When you want the whole crossing at once rather than one life at a time:
 
 ## The loop
 
