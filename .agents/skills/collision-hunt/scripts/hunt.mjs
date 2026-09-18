@@ -107,26 +107,29 @@ async function frame(opts) {
       return import('/scripts/collide.js').then((m) => JSON.stringify(m.probe({ age, row, col })));
     })()`));
 
-    // The inspector's own camera convention: eye = target + dir * distance, so
-    // the same numbers move its orbit and this camera.
-    const aim = opts.at ? String(opts.at).split(',').map(Number)
-      : (parked.overlaps[0] ? parked.overlaps[0].at : [parked.at.x, parked.at.y + 0.6, parked.at.z]);
-    const distance = Number(opts.distance || 3.6);
-    await session.evaluate(`(() => {
-      const p = AAL.player;
-      AAL.rig.update = () => {};
-      const t = { x: ${aim[0]}, y: ${aim[1]}, z: ${aim[2]} };
-      const d = ${distance};
-      AAL.camera.position.set(t.x, t.y + 0.08 * d, t.z + d);
-      AAL.camera.lookAt(t.x, t.y, t.z);
-      AAL.camera.updateMatrixWorld(true);
-      for (const el of [...document.body.children]) if (el.tagName !== 'CANVAS') el.style.display = 'none';
-      AAL.step(0.0001, 60, true);
-      return 'ok';
-    })()`);
-
-    const file = await shot(session, join(SHOTS, `${label}-${phase}.png`));
-    console.log(`${phase}: ${file}`);
+    // Two frames, because one is never enough: the body from the clearest point
+    // of the compass, and a tight one on the place it is inside something.
+    // Several angles, named by where the camera ended up. One direction can hide
+    // the thing the frame exists to show; three cannot all hide it.
+    for (const [suffix, which] of [['', 'body'], ['-near', 'contact']]) {
+      const angles = JSON.parse(await session.evaluate(`(() => {
+        const p = AAL.player;
+        AAL.rig.update = () => {};
+        for (const el of [...document.body.children]) if (el.tagName !== 'CANVAS') el.style.display = 'none';
+        return import('/scripts/collide.js').then((m) => JSON.stringify(m.viewpoints().${which}.angles));
+      })()`));
+      for (const view of angles) {
+        await session.evaluate(`(() => {
+          AAL.camera.position.set(${view.eye.x}, ${view.eye.y}, ${view.eye.z});
+          AAL.camera.lookAt(${view.aim.x}, ${view.aim.y}, ${view.aim.z});
+          AAL.camera.updateMatrixWorld(true);
+          AAL.step(0.0001, 60, true);
+          return 'ok';
+        })()`);
+        const file = await shot(session, join(SHOTS, `${label}-${phase}${suffix}-${view.name}.png`));
+        console.log(`${phase}${suffix} from ${view.name} (${view.blocked} blocked): ${file}`);
+      }
+    }
     if (parked.overlaps.length) console.log(`  overlaps there: ${parked.overlaps.map((o) => `${o.mesh} ${o.depth} deep (${o.top} top)`).join('; ')}`);
     else console.log('  nothing overlapping at that spot.');
   } finally {
@@ -148,7 +151,7 @@ async function frame(opts) {
 async function walk(opts) {
   const rows = Number(opts.rows || 8);
   const ages = opts.ages ? String(opts.ages).split(',').map(Number) : [1, 34, 75];
-  const shots = opts.shots || 'all';
+  const shots = opts.shots || 'hits';
   const label = opts.label || 'walk';
   const { session, cleanup } = await open(opts);
   const lines = [];
@@ -194,16 +197,19 @@ async function walk(opts) {
       for (const step of log) {
         const hit = step.worst && step.worst.depth > 0.03;
         if (shots === 'all' || (shots === 'hits' && hit)) {
-          const aim = step.worst ? step.worst.at : [step.x, step.ground + 0.5, step.z];
           await session.evaluate(`(() => {
             const p = AAL.player;
             AAL.rig.update = () => {};
             for (const el of [...document.body.children]) if (el.tagName !== 'CANVAS') el.style.display = 'none';
-            AAL.camera.position.set(${aim[0]}, ${aim[1]} + 0.3, ${aim[2]} + 3.4);
-            AAL.camera.lookAt(${aim[0]}, ${aim[1]}, ${aim[2]});
-            AAL.camera.updateMatrixWorld(true);
-            AAL.step(0.0001, 60, true);
-            return 'ok';
+            return import('/scripts/collide.js').then((m) => {
+              const v = m.viewpoints().body;
+              const view = v.angles[0];
+              AAL.camera.position.set(view.eye.x, view.eye.y, view.eye.z);
+              AAL.camera.lookAt(view.aim.x, view.aim.y, view.aim.z);
+              AAL.camera.updateMatrixWorld(true);
+              AAL.step(0.0001, 60, true);
+              return 'ok';
+            });
           })()`);
           const file = await shot(session, join(SHOTS, `${label}-a${step.age}-m${String(step.move).padStart(2, '0')}.png`));
           step.shot = file.split('/').pop();
