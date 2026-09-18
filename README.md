@@ -39,7 +39,7 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | `WASD` `QE` | fly the target |
 | arrows | orbit |
 | click | pick an object and box it |
-| `P` / Hold | hold the world still while you look at it |
+| `P` / Hold | hold the world still while you look at it (the button says Resume while held) |
 | `` ` `` / Play game | hand the game back: camera, input and all |
 | `B` | toggle the picked object's bounds |
 | `C` | composer vs raw renderer |
@@ -226,7 +226,7 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 54 checks, in a real browser
+npm test        # 61 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and

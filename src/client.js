@@ -549,6 +549,7 @@
       .panel .good { color: #9ef29e; }
       .panel .key { color: #9fd0ff; }
       .panel .row { display: flex; gap: 6px; margin-top: 8px; }
+      .panel .info { white-space: pre; }
       .panel button {
         font: inherit; letter-spacing: 0.06em; text-transform: uppercase;
         color: inherit; background: rgba(255, 255, 255, 0.07);
@@ -570,9 +571,20 @@
       :host([data-mode='play']) .panel { display: none; }
       :host([data-mode='play']) .badge { display: block; }
     </style>
-    <div class="panel"></div>
+    <div class="panel">
+      <div class="info"></div>
+      <div class="row">
+        <button data-act="play">Play game</button>
+        <button data-act="pause">Hold</button>
+      </div>
+      <div class="row">
+        <button data-act="reset">Reset view</button>
+        <button data-act="stop">Stop</button>
+      </div>
+    </div>
     <div class="badge">&larr; inspect</div>`;
-  const panel = shadow.querySelector('.panel');
+  const info = shadow.querySelector('.info');
+  const pauseButton = shadow.querySelector('button[data-act="pause"]');
 
   // One listener on the shadow root rather than on the buttons: the panel's
   // markup is rebuilt on every update, and delegated handlers survive that.
@@ -582,7 +594,13 @@
       setMode('inspect');
       return;
     }
-    const action = event.target?.dataset?.act;
+    // Resolved from the path rather than the target: a click that spans a
+    // panel refresh lands on the nearest common ancestor instead of the button,
+    // and reading dataset off that finds nothing. That is why a button could
+    // look like it needed two taps.
+    const action = (event.composedPath?.() ?? [])
+      .map((node) => node?.dataset?.act)
+      .find(Boolean);
     if (!action) return;
     event.stopPropagation();
     if (action === 'pause') { if (state.frozen) thaw(); else freeze(); }
@@ -641,15 +659,12 @@
     html += '\n<span class="dim">drag orbit &middot; wheel zoom &middot; right/shift pan</span>\n';
     html += '<span class="dim">click pick &middot; </span><span class="key">B</span><span class="dim"> bounds &middot; </span>'
       + '<span class="key">C</span><span class="dim"> composer &middot; </span><span class="key">R</span><span class="dim"> reset view &middot; </span>'
-      + '<span class="key">Esc</span><span class="dim"> stop</span>';
-    html += '<div class="row">'
-      + '<button data-act="play">Play game</button>'
-      + `<button data-act="pause" class="${state.frozen ? 'play' : 'pause'}">${state.frozen ? 'Resume' : 'Hold'}</button>`
-      + '</div><div class="row">'
-      + '<button data-act="reset">Reset view</button>'
-      + '<button data-act="stop">Stop</button>'
-      + '</div>';
-    panel.innerHTML = html;
+      + '<span class="key">P</span><span class="dim"> hold &middot; </span><span class="key">Esc</span><span class="dim"> stop</span>';
+    // Only the readout is rewritten. The buttons live outside it and are never
+    // replaced, so a click can always land on the one that was pressed.
+    info.innerHTML = html;
+    pauseButton.textContent = state.frozen ? 'Resume' : 'Hold';
+    pauseButton.className = state.frozen ? 'play' : 'pause';
   }
 
   /**

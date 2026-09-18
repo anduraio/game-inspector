@@ -227,6 +227,48 @@ async function main() {
     const framesB = (JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'))).frames;
     expect('the inspector\'s own loop is running', framesB > framesA, `${framesA} -> ${framesB}`);
 
+    // --- the panel's buttons work on the first tap ----------------------
+    // A tap that spans a panel refresh used to land on the panel instead of the
+    // button -- the readout was rewritten every half second and took the button
+    // with it -- so the buttons sometimes needed two taps. The refresh is forced
+    // between down and up here, which is exactly that case.
+    const clickShadowButton = (act) => `(() => {
+      const shadow = document.querySelector('div[style*="2147483001"]').shadowRoot;
+      const button = shadow.querySelector('button[data-act="${act}"]');
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+      window.__GAME_INSPECTOR__.updatePanel();
+      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      return 1;
+    })()`;
+
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(false); window.__GAME_INSPECTOR__.updatePanel(); 1');
+    expect('the panel offers a Hold button', await session.evaluate(
+      `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('button[data-act="pause"]').textContent`,
+    ) === 'Hold');
+
+    await session.evaluate(clickShadowButton('pause'));
+    expect('one tap holds the game, even across a panel refresh',
+      await session.evaluate('window.__GAME_INSPECTOR__.state.frozen') === true,
+      await session.evaluate('document.querySelector(\'div[style*="2147483001"]\').shadowRoot.querySelector(\'button[data-act="pause"]\').textContent'));
+    expect('and the button now offers to resume', await session.evaluate(
+      `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('button[data-act="pause"]').textContent`,
+    ) === 'Resume');
+
+    await session.evaluate(clickShadowButton('pause'));
+    expect('one tap resumes it again',
+      await session.evaluate('window.__GAME_INSPECTOR__.state.frozen') === false);
+
+    // --- the keyboard equivalents ---------------------------------------
+    const keyIn = (key) => `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', code: 'Key${key.toUpperCase()}', bubbles: true }))`;
+    await session.evaluate(keyIn('p'));
+    expect('the P key holds it too', await session.evaluate('window.__GAME_INSPECTOR__.state.frozen') === true);
+    await session.evaluate(keyIn('p'));
+    expect('and P again resumes it', await session.evaluate('window.__GAME_INSPECTOR__.state.frozen') === false);
+    expect('the panel shows the key', await session.evaluate(
+      `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('.info').textContent.includes('hold')`,
+    ));
+
     // --- playing the game rather than looking at it ---------------------
     // The whole point of the mode: while inspecting, the inspector eats the
     // input; while playing, the game gets every event and the inspector paints
