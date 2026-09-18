@@ -11,8 +11,10 @@ pull back over a level, box an object to see where it actually is.
 game-inspector --launch --url http://localhost:5174
 ```
 
-The game keeps playing while you fly around it. Pause it when you want it to hold
-still, and the inspector stays attached across reloads.
+There are two modes. It starts inspecting: the camera is yours, the game is
+running, and the panel watches. Hit **Play game** (or `` ` ``) and the game takes
+everything back — camera, input, its own draw call — leaving a small badge in the
+corner to get back. The inspector stays attached across reloads either way.
 
 ```
 launched /Applications/Google Chrome.app/... on port 9222
@@ -37,7 +39,8 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | `WASD` `QE` | fly the target |
 | arrows | orbit |
 | click | pick an object and box it |
-| `P` / the Pause button | pause and resume the game |
+| `P` / Hold | hold the world still while you look at it |
+| `` ` `` / Play game | hand the game back: camera, input and all |
 | `B` | toggle the picked object's bounds |
 | `C` | composer vs raw renderer |
 | `R` / Reset view | back to where the game was looking |
@@ -77,6 +80,26 @@ The search walks the page's globals breadth-first, three levels deep. A game
 puts its scene on a global or one object inside one; going deeper means walking
 the DOM, every extension's globals and every library the page ever loaded, for
 nothing.
+
+## Inspecting and playing
+
+Two activities that cannot share one set of controls: the same drag cannot be both
+an orbit and a gesture at the game, and one camera cannot be both the inspector's
+and the game's. So it is a mode, not a setting.
+
+**Inspecting** takes the camera, the draw call and the input. The game keeps
+running — the world is not a frozen diorama — but it never sees a keystroke. This
+is the mode for looking at things.
+
+**Playing** hands all three back. The game paints its own frame with its own
+post-processing, reads the keyboard and the pointer exactly as it always does, and
+the inspector collapses to a small badge in the corner. This is the mode for
+checking the thing actually works, and it is the honest way to test a game you are
+building: the version you play is the version you shipped, not a version being
+rendered by a tool.
+
+The badge, `` ` `` or the API switch between them, and the mode is in every status
+report.
 
 ## It stays
 
@@ -173,6 +196,11 @@ touched. To do it yourself:
   that captured a private reference to it before this ran keeps ticking. The
   camera is still safe — the draw call is what the inspector holds — but the
   world will not hold still.
+- **Input shielding happens at the window's capture phase.** That beats a game
+  that listens on `window` or on an element, which is nearly all of them. A game
+  that registers its own `window` listener *with capture* before the inspector
+  loads gets the event first and cannot be shielded; hold the world still if that
+  matters.
 - **A game that hides its renderer keeps painting underneath.** The inspector
   cannot take a draw call it cannot find, so with its own renderer built from
   THREE the game renders as well, invisibly, and the work is wasted. Nothing
@@ -198,13 +226,14 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 47 checks, in a real browser
+npm test        # 54 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and
 attaches over this project's own CDP client. It checks what actually happened
 rather than what was called: that the game keeps playing while the inspector is
-up and that its draw calls are being taken over, that pausing stops it and
+up and that its draw calls are being taken over, that inspecting keeps the input
+away from the game and playing hands it over, that holding stops the world and
 resuming lets it go, that the camera is aimed at the orbit target every frame,
 that the eye sits exactly `distance` from the target after a swing, that picking
 the middle of the screen finds the mesh that is there, that the panel is in a

@@ -227,6 +227,48 @@ async function main() {
     const framesB = (JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'))).frames;
     expect('the inspector\'s own loop is running', framesB > framesA, `${framesA} -> ${framesB}`);
 
+    // --- playing the game rather than looking at it ---------------------
+    // The whole point of the mode: while inspecting, the inspector eats the
+    // input; while playing, the game gets every event and the inspector paints
+    // nothing.
+    await session.evaluate('window.__received.keys = 0; window.__received.pointers = 0; window.__GAME_INSPECTOR__.setMode("inspect"); 1');
+    await session.evaluate(`(() => {
+      const canvas = document.getElementById('game');
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
+      return 1;
+    })()`);
+    expect('while inspecting, the inspector keeps the input to itself',
+      await session.evaluate('window.__received.pointers === 0 && window.__received.keys === 0'),
+      await session.evaluate('JSON.stringify(window.__received)'));
+
+    await session.evaluate('window.__received.keys = 0; window.__received.pointers = 0; window.__GAME_INSPECTOR__.setMode("play"); 1');
+    const played = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
+    expect('playing hands the draw call back', played.suppressed === false && played.mode === 'play', JSON.stringify({ mode: played.mode, suppressed: played.suppressed }));
+    expect('and hides the inspector\'s own canvas',
+      await session.evaluate(`!document.querySelector("canvas[style*='2147482000']") || document.querySelector("canvas[style*='2147482000']").style.display === 'none'`));
+
+    await session.evaluate(`(() => {
+      const canvas = document.getElementById('game');
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
+      return 1;
+    })()`);
+    expect('while playing, the game receives the input',
+      await session.evaluate('window.__received.pointers === 1 && window.__received.keys === 1'),
+      await session.evaluate('JSON.stringify(window.__received)'));
+
+    const gameDraws = await session.evaluate('window.__fixture.renderer.calls');
+    await sleep(300);
+    expect('and the game paints for itself',
+      await session.evaluate('window.__fixture.renderer.calls') > gameDraws,
+      `${gameDraws} -> ${await session.evaluate('window.__fixture.renderer.calls')}`);
+
+    await session.evaluate('window.__GAME_INSPECTOR__.setMode("inspect")');
+    await nextFrame(session);
+    const backToInspect = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
+    expect('switching back takes the draw call again', backToInspect.suppressed === true && backToInspect.mode === 'inspect', JSON.stringify({ mode: backToInspect.mode, suppressed: backToInspect.suppressed }));
+
     // --- teardown -------------------------------------------------------
     await session.evaluate('window.__GAME_INSPECTOR__.stop()');
     const stopped = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));

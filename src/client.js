@@ -200,6 +200,9 @@
 
   const state = {
     active: false,
+    // 'inspect' takes the camera, the draw call and the input. 'play' hands all
+    // three back, so the game is simply the game with a stats panel over it.
+    mode: 'inspect',
     frozen: false,
     useComposer: !!found.composer,
     showBounds: false,
@@ -480,6 +483,14 @@
 
   function renderFrame() {
     if (!state.active) return;
+    // Playing: the game has its camera and its draw call back, so there is
+    // nothing for the inspector to paint. The loop keeps ticking for the panel.
+    if (state.mode === 'play') {
+      state.frames++;
+      tickPanel();
+      rafId = realRAF(renderFrame);
+      return;
+    }
     applyCamera();
     try {
       if (state.useComposer && drawComposer) drawComposer();
@@ -490,17 +501,24 @@
       state.error = String(err && err.message ? err.message : err);
     }
     state.frames++;
+    tickPanel();
+    if (state.showBounds) drawBounds();
+    rafId = realRAF(renderFrame);
+  }
+
+  function tickPanel() {
     fpsFrames++;
     const now = performance.now();
-    if (!fpsMark) fpsMark = now;
-    else if (now - fpsMark > 500) {
+    if (!fpsMark) {
+      fpsMark = now;
+      return;
+    }
+    if (now - fpsMark > 500) {
       state.fps = Math.round((fpsFrames * 1000) / (now - fpsMark));
       fpsMark = now;
       fpsFrames = 0;
       updatePanel();
     }
-    if (state.showBounds) drawBounds();
-    rafId = realRAF(renderFrame);
   }
 
   // ---------------------------------------------------------------------------
@@ -540,19 +558,38 @@
       .panel button:hover { background: rgba(255, 255, 255, 0.15); }
       .panel button.play { color: #9ef29e; }
       .panel button.pause { color: #ffd479; }
+      .badge {
+        position: absolute; left: 12px; bottom: 12px; display: none;
+        font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
+        color: #9ef29e; background: rgba(12, 15, 20, 0.82);
+        border: 1px solid rgba(158, 242, 158, 0.35); border-radius: 999px;
+        padding: 5px 12px; pointer-events: auto; backdrop-filter: blur(8px);
+      }
+      .badge:hover { background: rgba(30, 45, 30, 0.95); }
+      :host([data-mode='play']) .panel { display: none; }
+      :host([data-mode='play']) .badge { display: block; }
     </style>
-    <div class="panel"></div>`;
+    <div class="panel"></div>
+    <div class="badge">&larr; inspect</div>`;
   const panel = shadow.querySelector('.panel');
 
   // One listener on the shadow root rather than on the buttons: the panel's
   // markup is rebuilt on every update, and delegated handlers survive that.
   shadow.addEventListener('click', (event) => {
+    // The badge is the whole panel while playing: clicking it goes back.
+    if (event.composedPath?.().some((node) => node?.classList?.contains?.('badge'))) {
+      setMode('inspect');
+      return;
+    }
     const action = event.target?.dataset?.act;
     if (!action) return;
     event.stopPropagation();
     if (action === 'pause') { if (state.frozen) thaw(); else freeze(); }
     else if (action === 'reset') resetView();
     else if (action === 'stop') { stop(); return; }
+    else if (action === 'play') { setMode('play'); return; }
+    else if (action === 'inspect') { setMode('inspect'); return; }
     updatePanel();
   });
 
@@ -606,11 +643,49 @@
       + '<span class="key">C</span><span class="dim"> composer &middot; </span><span class="key">R</span><span class="dim"> reset view &middot; </span>'
       + '<span class="key">Esc</span><span class="dim"> stop</span>';
     html += '<div class="row">'
-      + `<button data-act="pause" class="${state.frozen ? 'play' : 'pause'}">${state.frozen ? 'Play' : 'Pause'}</button>`
+      + '<button data-act="play">Play game</button>'
+      + `<button data-act="pause" class="${state.frozen ? 'play' : 'pause'}">${state.frozen ? 'Resume' : 'Hold'}</button>`
+      + '</div><div class="row">'
       + '<button data-act="reset">Reset view</button>'
       + '<button data-act="stop">Stop</button>'
       + '</div>';
     panel.innerHTML = html;
+  }
+
+  /**
+   * Switch between flying the camera and playing the game.
+   *
+   * The same gesture cannot be both an orbit and a hop, and the same camera
+   * cannot be both the inspector's and the game's, so this is a mode rather than
+   * a setting. Inspecting takes the camera, the draw call and the input;
+   * playing hands all three back and leaves a panel watching.
+   */
+  function setMode(mode) {
+    if (mode !== 'play' && mode !== 'inspect') return;
+    if (mode === state.mode) return;
+    state.mode = mode;
+    host.dataset.mode = mode;
+
+    if (mode === 'play') {
+      // A game you are playing has to be running, and it has to paint.
+      thaw();
+      releaseDrawing();
+      if (ownCanvas) ownCanvas.style.display = 'none';
+      overlay.style.display = 'none';
+      state.picked = null;
+      if (ctx2d) ctx2d.clearRect(0, 0, overlay.width, overlay.height);
+      drag = null;
+    } else {
+      // Take the three back. The camera follows on the next frame.
+      takeOverDrawing();
+      if (ownCanvas) ownCanvas.style.display = 'block';
+      overlay.style.display = 'block';
+    }
+    updatePanel();
+  }
+
+  function isPlaying() {
+    return state.mode === 'play';
   }
 
   /** Draw a world box as 12 screen-space edges. No THREE, just projection. */
@@ -717,6 +792,8 @@
   function shield(type, handler, options = {}) {
     listen(window, type, (event) => {
       if (!state.active) return;
+      // Playing means playing: the game gets every event, untouched.
+      if (state.mode === 'play') return;
       if (insidePanel(event)) return; // the panel is ours to click
       handler(event);
       event.stopPropagation();
@@ -726,7 +803,23 @@
 
   let drag = null;
 
+  /**
+   * The one key the inspector listens for while you are playing.
+   *
+   * Everything else has to reach the game untouched, and a dev overlay that
+   * cannot be dismissed from the keyboard is a trap in fullscreen. Backquote
+   * because a game is very unlikely to want it, and it does not stop
+   * propagation: if something does want it, it still gets it.
+   */
+  function installToggleKey() {
+    listen(window, 'keydown', (event) => {
+      if (!state.active || event.key !== '`') return;
+      setMode(state.mode === 'play' ? 'inspect' : 'play');
+    }, { capture: true });
+  }
+
   function installInput() {
+    installToggleKey();
     shield('pointerdown', (event) => {
       drag = { x: event.clientX, y: event.clientY, button: event.button, moved: 0, shift: event.shiftKey };
       try { event.target?.setPointerCapture?.(event.pointerId); } catch { /* synthetic pointers cannot be captured */ }
@@ -849,6 +942,7 @@
     takeOverDrawing();
     document.body?.appendChild(overlay);
     document.body?.appendChild(host);
+    host.dataset.mode = state.mode;
     if (ownRenderer) listen(window, 'resize', resizeOwnCanvas);
     installInput();
     // Deliberately not frozen. Taking the draw call is what makes the camera
@@ -917,6 +1011,8 @@
     dolly,
     pan,
     pick,
+    setMode,
+    isPlaying,
     resetView,
     reframe,
     clearPose,
@@ -935,6 +1031,7 @@
           three: !!found.three,
           children: found.scene ? found.scene.children.length : 0,
         },
+        mode: state.mode,
         renderMode: found.composer && state.useComposer ? 'composer'
           : found.renderer ? 'game' : ownRenderer ? 'own' : 'none',
         // Did the inspector take the game's draw call, and where you left the

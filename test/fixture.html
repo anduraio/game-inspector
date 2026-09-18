@@ -100,6 +100,12 @@
     },
   };
 
+  // What the game actually receives. The inspector shields input while it is
+  // flying the camera, and must stop doing that while you are playing.
+  window.__received = { keys: 0, pointers: 0 };
+  window.addEventListener('keydown', () => { window.__received.keys++; });
+  document.getElementById('game').addEventListener('pointerdown', () => { window.__received.pointers++; });
+
   let frames = 0;
   function tick() {
     frames++;
