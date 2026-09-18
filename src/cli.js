@@ -29,6 +29,9 @@ Options
   --headed            with --launch, show the window instead of headless
   --chrome <path>     browser binary to launch
   --distance <n>      how far to start from the subject, in world units (default 12)
+  --pixel-ratio <n>   resolution the inspector draws at (default 1; the game's
+                      canvas is covered, so this is a look-at-the-model view)
+  --blur              frosted glass behind the panel, off by default
   --wait <seconds>    how long to wait for the page to build a scene (default 15)
   --no-borrow         do not try to import Three.js from the page's dev server
   --once              inject and exit instead of staying to re-inject on reload
@@ -72,6 +75,7 @@ function parseArgs(argv) {
   const options = {
     url: null, port: 9222, host: '127.0.0.1', launch: false, headed: null,
     chrome: null, distance: null, wait: 15, borrow: true, watch: true, keep: false,
+    pixelRatio: null, blur: false,
     list: false, status: false, stop: false, json: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -90,6 +94,8 @@ function parseArgs(argv) {
       case '--headless': options.headed = false; break;
       case '--chrome': options.chrome = next(); break;
       case '--distance': case '-d': options.distance = Number(next()); break;
+      case '--pixel-ratio': options.pixelRatio = Number(next()); break;
+      case '--blur': options.blur = true; break;
       case '--wait': case '-w': options.wait = Number(next()); break;
       case '--no-borrow': options.borrow = false; break;
       case '--once': case '--no-watch': options.watch = false; break;
@@ -143,6 +149,27 @@ const BORROW_THREE = `(async () => {
   return null;
 })()`;
 
+/**
+ * Wait for the game's next frame or two.
+ *
+ * A renderer the game kept private is found through the scene's own callback,
+ * which only fires when the game renders -- so at the moment the inspector
+ * starts, it has not been found yet. Reporting before the game has drawn once
+ * would say the inspector has taken nothing over when it is about to. A game
+ * renders sixty times a second, so this is a frame; a game that is paused never
+ * answers, and a paused game has no draw call worth taking.
+ */
+async function settle(session, status, { timeout = 700 } = {}) {
+  if (!status.active || status.suppressed || !status.found?.scene) return status;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    await sleep(50);
+    const next = await session.evaluate('window.__GAME_INSPECTOR__.status()');
+    if (next.suppressed) return next;
+  }
+  return status;
+}
+
 async function startInspector(session, options) {
   const deadline = Date.now() + options.wait * 1000;
   let status = JSON.parse(await session.evaluate(CLIENT));
@@ -170,7 +197,7 @@ async function startInspector(session, options) {
     }
   }
 
-  return status;
+  return settle(session, status);
 }
 
 function reportList(targets, options) {
@@ -199,6 +226,14 @@ function reportStatus(status, options) {
   if (status.stats) {
     say(`  contents   ${status.stats.objects} objects, ${status.stats.meshes} meshes, ${status.stats.triangles.toLocaleString()} triangles`);
   }
+  // Whether the game's own draw call has been taken away from it. Without this
+  // the scene is being painted twice a frame, which is the difference between a
+  // scene you can fly around and a scene you can only drag through treacle.
+  if (status.privateRenderer) say('  found      the game\'s renderer, through the scene (it was not on any global)');
+  say(`  drawing    ${status.suppressed
+    ? `the inspector's, with ${status.swallowed.toLocaleString()} of the game's draw calls taken`
+    : 'the game\'s own (the inspector has taken nothing)'}`);
+  if (Number.isFinite(status.pixelRatio)) say(`  ratio      ${status.pixelRatio}`);
   say(`  frozen     ${status.frozen}`);
   say(`  distance   ${status.distance}`);
   if (status.camera) {
@@ -287,13 +322,19 @@ async function main() {
       say(`could not start: ${status.error}`);
       return 1;
     }
-    if (!options.json && options.distance) {
-      await session.evaluate(`(() => { const i = window.__GAME_INSPECTOR__; i.state.distance = ${options.distance}; return 1; })()`);
-      const refreshed = await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())');
-      reportStatus(JSON.parse(refreshed), options);
-    } else {
-      reportStatus(status, options);
+
+    // The client is injected as source text, so anything it has to be told is
+    // told afterwards rather than baked into the script. Re-read the status: it
+    // reports these back, and a report that predates them would be a lie.
+    const settings = [];
+    if (options.distance) settings.push(`i.state.distance = ${options.distance}`);
+    if (options.pixelRatio) settings.push(`i.setPixelRatio(${options.pixelRatio})`);
+    if (options.blur) settings.push('i.setBlur(true)');
+    if (settings.length) {
+      await session.evaluate(`(() => { const i = window.__GAME_INSPECTOR__; ${settings.join('; ')}; return 1; })()`);
+      status = await session.evaluate('window.__GAME_INSPECTOR__.status()');
     }
+    reportStatus(status, options);
 
     if (!options.json) {
       say('');

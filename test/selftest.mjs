@@ -320,6 +320,15 @@ async function main() {
     expect('and hides the inspector\'s own canvas',
       await session.evaluate(`!document.querySelector("canvas[style*='2147482000']") || document.querySelector("canvas[style*='2147482000']").style.display === 'none'`));
 
+    // The badge is the whole interface while playing, so the frame rate has to be
+    // on it: playing hands the draw call back, and without a number there is no
+    // way to tell the game's own frame rate from the inspector still costing
+    // something.
+    const badgeFps = await waitFor(session,
+      `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('.badge').textContent`,
+      (v) => /\d+ fps/.test(v), { timeout: 4000 });
+    expect('the badge shows the frame rate while playing', /\d+ fps/.test(badgeFps), badgeFps);
+
     await session.evaluate(`(() => {
       const canvas = document.getElementById('game');
       canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2, clientX: 10, clientY: 10, bubbles: true, cancelable: true }));
@@ -336,10 +345,37 @@ async function main() {
       await session.evaluate('window.__fixture.renderer.calls') > gameDraws,
       `${gameDraws} -> ${await session.evaluate('window.__fixture.renderer.calls')}`);
 
+    // Playing hands the camera to the game, which drives it somewhere else. The
+    // fixture's camera is moved by hand here for the same reason a real one
+    // moves by itself: a pose captured at attach is a fixed point in a world
+    // that has moved on, and a game that streams its world leaves the inspector
+    // looking at ground it has since retired.
+    await session.evaluate('window.__fixture.camera.position.set(10, 5, 10)');
     await session.evaluate('window.__GAME_INSPECTOR__.setMode("inspect")');
     await nextFrame(session);
     const backToInspect = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
     expect('switching back takes the draw call again', backToInspect.suppressed === true && backToInspect.mode === 'inspect', JSON.stringify({ mode: backToInspect.mode, suppressed: backToInspect.suppressed }));
+    // The fixture looks down (0,-1,-2)/sqrt(5), so the pivot is that far along
+    // its view from wherever the camera now is, with the floor clamp. Derived
+    // from the distance in force rather than a literal, because the zoom is the
+    // one part of the pose that is the viewer's and is expected to survive.
+    const along = (s, cameraY, cameraZ) => ({
+      x: 10,
+      y: Math.max(cameraY - (1 / Math.sqrt(5)) * s.distance, 0),
+      z: cameraZ - (2 / Math.sqrt(5)) * s.distance,
+    });
+    const wantReanchor = along(backToInspect, 5, 10);
+    const nearPose = (got, want) => Math.abs(got.x - want.x) < 0.001
+      && Math.abs(got.y - want.y) < 0.001 && Math.abs(got.z - want.z) < 0.01;
+    expect('and it re-aims at where the game is looking now, not where it was',
+      nearPose(backToInspect.target, wantReanchor),
+      `${JSON.stringify(backToInspect.target)} vs ${JSON.stringify(wantReanchor)}`);
+
+    await session.evaluate('window.__GAME_INSPECTOR__.state.target = { x: 99, y: 99, z: 99 }; window.__GAME_INSPECTOR__.resetView(); 1');
+    const afterReset = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
+    expect('and Reset view asks the game again rather than restoring a pose from attach',
+      nearPose(afterReset.target, along(afterReset, 5, 10)),
+      `${JSON.stringify(afterReset.target)} vs ${JSON.stringify(along(afterReset, 5, 10))}`);
 
     // --- teardown -------------------------------------------------------
     await session.evaluate('window.__GAME_INSPECTOR__.stop()');
@@ -378,6 +414,32 @@ async function main() {
     expect('by building a renderer of its own', borrowed.renderMode === 'own', borrowed.renderMode);
     expect('and it found the namespace it needed', borrowed.found.three === true && borrowed.found.renderer === false, JSON.stringify(borrowed.found));
 
+    // The renderer is unreachable, but the scene is not, and Three.js announces
+    // every renderer to the scene at the top of each render. That announcement
+    // is the only place a game that keeps its renderer private ever mentions it,
+    // and taking the draw call is what stops the scene being painted twice.
+    await waitFor(session, 'window.__GAME_INSPECTOR__.status().swallowed', (v) => v > 2, { timeout: 4000 });
+    const swallowedA = await session.evaluate('window.__GAME_INSPECTOR__.status().swallowed');
+    await sleep(300);
+    const swallowedB = await session.evaluate('window.__GAME_INSPECTOR__.status().swallowed');
+    expect('the game\'s draw call is taken even though its renderer is unreachable',
+      swallowedB > swallowedA, `${swallowedA} -> ${swallowedB}`);
+    expect('and the inspector says how it found it',
+      await session.evaluate('window.__GAME_INSPECTOR__.status().privateRenderer') === true);
+    expect('while the game itself keeps running',
+      await session.evaluate('window.__GAME_INSPECTOR__.status().frozen') === false);
+
+    const gameDrawsA = await session.evaluate('window.__fixture.draws()');
+    await sleep(250);
+    expect('the game stops painting for itself',
+      await session.evaluate('window.__fixture.draws()') === gameDrawsA,
+      `${gameDrawsA} -> ${await session.evaluate('window.__fixture.draws()')}`);
+    const ownA = await session.evaluate('window.__ownRenderer.calls');
+    await sleep(250);
+    expect('and the inspector is the one painting',
+      await session.evaluate('window.__ownRenderer.calls') > ownA,
+      `${ownA} -> ${await session.evaluate('window.__ownRenderer.calls')}`);
+
     await waitFor(session, 'window.__ownRenderer ? window.__ownRenderer.calls : 0', (v) => v > 3);
     expect('the built renderer is the one drawing',
       await session.evaluate('(window.__ownRenderer?.calls ?? 0) > 3'),
@@ -389,6 +451,13 @@ async function main() {
       await session.evaluate('!!document.querySelector("canvas[style*=\'2147482000\']")'), 'no overlay canvas found');
 
     await session.evaluate('window.__GAME_INSPECTOR__.stop()');
+    expect('stopping gives the unreachable renderer its draw call back',
+      await session.evaluate('window.__GAME_INSPECTOR__.status().suppressed === false'));
+    const restartedGame = await session.evaluate('window.__fixture.draws()');
+    await sleep(300);
+    expect('and the game paints for itself again',
+      await session.evaluate('window.__fixture.draws()') > restartedGame,
+      `${restartedGame} -> ${await session.evaluate('window.__fixture.draws()')}`);
     expect('stopping disposes the renderer it built',
       await session.evaluate('window.__ownRendererDisposed === true'), 'dispose() was never called');
     expect('and takes its canvas away',

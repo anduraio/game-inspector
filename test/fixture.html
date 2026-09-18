@@ -97,6 +97,11 @@
       this.info.render.triangles += 24;
       this.lastScene = s;
       this.lastCamera = c;
+      // Three.js announces the renderer to the scene at the top of every
+      // render, and that announcement is the only place a game that keeps its
+      // renderer private ever mentions it. Doing it here is what makes this
+      // fixture able to test finding one.
+      s.onBeforeRender?.(this, s, c, null);
     },
   };
 
@@ -154,8 +159,10 @@
     window.game = { scene, camera, frames: () => frames };
     // The renderer is not left anywhere the inspector can reach, which is the
     // whole point of this mode. A test global that held it would quietly make
-    // this fixture the other fixture.
-    window.__fixture = { scene, camera, frames: () => frames };
+    // this fixture the other fixture. A closure over it is not reachable the
+    // same way -- the inspector's scan walks objects, and never enqueues a
+    // function -- so the test can still ask whether the game is painting.
+    window.__fixture = { scene, camera, frames: () => frames, draws: () => renderer.calls };
   } else {
     window.game = { scene, camera, renderer, frames: () => frames };
     window.__fixture = { scene, camera, renderer, frames: () => frames };

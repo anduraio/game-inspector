@@ -213,6 +213,17 @@
     picked: null,
     frames: 0,
     fps: 0,
+    // How many of the game's draw calls are being swallowed per second. "The
+    // game is still asking to draw" is the useful half of that claim, so it is
+    // reported as a rate rather than as a total.
+    held: 0,
+    // The inspector's own canvas renders at ratio 1 by default: the game's
+    // canvas is covered, so this is a look-at-the-model view, and the full
+    // device ratio costs four times the pixels for a picture nobody is judging
+    // pixel by pixel. Raise it with --pixel-ratio when you are.
+    pixelRatio: 1,
+    // Decoration only; see the style block. --blur turns it on.
+    blur: false,
     error: null,
   };
 
@@ -222,6 +233,7 @@
   let rafId = 0;
   let fpsMark = 0;
   let fpsFrames = 0;
+  let heldMark = 0;
 
   function listen(target, type, handler, options) {
     target.addEventListener(type, handler, options);
@@ -232,9 +244,22 @@
   // Taking the camera
   // ---------------------------------------------------------------------------
 
-  function readInitialPose() {
+  /**
+   * Point the inspector at whatever the game's camera is looking at, now.
+   *
+   * Asked more than once on purpose. The answer is not a fixed place: a game
+   * that streams its world moves the ground out from under a pose that never
+   * changes. The game generates track ahead of the player and retires the
+   * lanes behind them, so the spot the game's camera started from becomes bare
+   * ground with the game off the top of the frame, and a pose captured once at
+   * attach is wrong from the moment the player starts running. Asking again is
+   * what keeps "back to where the game is looking" true while the game plays.
+   *
+   * The distance is deliberately left alone: that is your zoom, not the game's.
+   */
+  function anchorToGame() {
     const camera = found.camera;
-    if (!camera?.position) return;
+    if (!camera?.position) return false;
     camera.updateMatrixWorld?.(true);
     const e = camera.matrixWorld?.elements;
     // The camera looks down its own -Z, so the third column of its world matrix
@@ -260,26 +285,20 @@
     state.target.y = Math.max(state.target.y, 0);
     state.pitch = Math.asin(Math.max(-1, Math.min(1, -fy)));
     state.yaw = Math.atan2(-fx, -fz);
-    state.distance = distance;
+    return true;
   }
 
-  /** The pose the game's camera was in when the inspector arrived. */
-  let homePose = null;
-
   /**
-   * Back to where the game was looking.
+   * Back to where the game is looking.
    *
    * Not "frame the whole scene": a game's scene is usually a small play area
    * inside a very large ground and sky, so framing all of it puts the camera a
    * quarter of a kilometre up looking at nothing. The useful place to return to
-   * is the one the game itself chose.
+   * is the one the game itself chose -- and that is present tense, because the
+   * world moves under a viewer that does not.
    */
   function resetView() {
-    if (!homePose) return;
-    state.target = { ...homePose.target };
-    state.yaw = homePose.yaw;
-    state.pitch = homePose.pitch;
-    state.distance = homePose.distance;
+    anchorToGame();
   }
 
   // Where you were looking, remembered per tab.
@@ -411,10 +430,84 @@
   const hijacked = [];
   let drawComposer = null;
   let drawRenderer = null;
+  // A renderer the game kept to itself: not on any global, so the scan above
+  // cannot see it, but it is the thing painting the game underneath us. See
+  // watchForRenderer.
+  let privateRenderer = null;
   // How many times the game has asked to draw since we took the job off it.
   // Not a problem to be fixed: it is how you tell a game that is playing but
   // hidden from a game that has stopped.
   let swallowed = 0;
+
+  // The scene's own callback, wrapped. Held so stop() can hand it back.
+  const rendererWatch = { scene: null, previous: null, armed: false };
+
+  /**
+   * Catch the renderer a game never told anyone about.
+   *
+   * Three.js announces every renderer to the scene before a frame is drawn:
+   * `scene.onBeforeRender(renderer, scene, camera, renderTarget)` is called at
+   * the top of WebGLRenderer.render. A game that keeps its renderer in a module
+   * scope -- which is the normal way to write one, since nothing ever needs it
+   * on a global -- still renders its scene, so this reaches the renderer without
+   * the game's cooperation and without touching the class.
+   *
+   * The class is deliberately not touched. `render` is assigned onto each
+   * WebGLRenderer in its constructor rather than being a prototype method, so
+   * there is no prototype to patch: `THREE.WebGLRenderer.prototype.render` does
+   * not exist, and patching it would silently do nothing at all. Finding the
+   * instance is the only thing that works, and this is where the instance is
+   * announced.
+   *
+   * Turns off nothing on its own: it records the renderer, and the draw call is
+   * taken by the same hijack used for a renderer the scan could see.
+   */
+  function watchForRenderer() {
+    if (rendererWatch.armed) return;
+    const scene = found.scene;
+    if (!scene) return;
+    // Not when the inspector already has the game's renderer in hand: it would
+    // be the same object, and a composer's renderer must stay unswallowed or
+    // the composer draws nothing.
+    if (found.renderer || found.composer) return;
+
+    // Three.js puts an empty onBeforeRender on every Object3D, but this is
+    // reached by duck-typing a scene, so it is installed when it is missing and
+    // handed back as it was found.
+    const previous = scene.onBeforeRender;
+    rendererWatch.scene = scene;
+    rendererWatch.previous = previous;
+    rendererWatch.armed = true;
+
+    scene.onBeforeRender = function (...args) {
+      const renderer = args[0];
+      // Our own renderer renders this same scene, and is not to be swallowed.
+      // First sighting wins: a scene with two renderers over it is already the
+      // problem being fixed.
+      if (state.active && !privateRenderer && renderer && renderer !== ownRenderer) {
+        privateRenderer = renderer;
+        // Only take it if the inspector is the one painting; while playing, the
+        // game is meant to be drawing for itself.
+        if (state.mode !== 'play') takeOverDrawing();
+        updatePanel();
+      }
+      if (typeof previous === 'function') return previous.apply(this, args);
+      return undefined;
+    };
+  }
+
+  function unwatchForRenderer() {
+    if (!rendererWatch.armed) return;
+    const { scene, previous } = rendererWatch;
+    try {
+      if (typeof previous === 'function') scene.onBeforeRender = previous;
+      else delete scene.onBeforeRender;
+    } catch { /* the scene went away with the page */ }
+    rendererWatch.armed = false;
+    rendererWatch.scene = null;
+    rendererWatch.previous = null;
+    privateRenderer = null;
+  }
 
   /**
    * Take the game's draw call away from it.
@@ -428,19 +521,27 @@
    *
    * The game keeps simulating, animating and reading input. It just stops
    * painting, and the inspector paints instead.
+   *
+   * Safe to call again when a renderer turns up later: an object already
+   * hijacked is left alone, because wrapping our own no-op a second time would
+   * make the original unrecoverable.
    */
   function takeOverDrawing() {
-    const hijack = (object, key) => {
-      if (!object || typeof object[key] !== 'function') return null;
-      const original = object[key];
-      object[key] = function inspectorDrawsThisNow() { swallowed++; };
-      hijacked.push({ object, key, original });
+    const hijack = (object) => {
+      if (!object || typeof object.render !== 'function') return null;
+      if (hijacked.some((entry) => entry.object === object)) return null;
+      const original = object.render;
+      object.render = function inspectorDrawsThisNow() { swallowed++; };
+      hijacked.push({ object, key: 'render', original });
       return (...args) => original.apply(object, args);
     };
     // The composer first: it calls the renderer underneath it, so grabbing the
     // renderer alone would swallow the inspector's own draw as well.
-    drawComposer = hijack(found.composer, 'render');
-    drawRenderer = hijack(found.renderer, 'render');
+    drawComposer = hijack(found.composer) ?? drawComposer;
+    drawRenderer = hijack(found.renderer) ?? drawRenderer;
+    // A private renderer is only ever silenced, never drawn through: the
+    // inspector paints its own canvas at the ratio it chose.
+    hijack(privateRenderer);
   }
 
   function releaseDrawing() {
@@ -464,7 +565,7 @@
     // for looking at things unable to show anyone what it saw. It only affects
     // the canvas the inspector owns.
     ownRenderer = new THREE.WebGLRenderer({ canvas: ownCanvas, antialias: true, preserveDrawingBuffer: true });
-    ownRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    ownRenderer.setPixelRatio(state.pixelRatio);
     ownRenderer.setSize(window.innerWidth, window.innerHeight, false);
     // Match the two settings that change how the scene looks, so the picture
     // is recognisably the game's rather than a flat default.
@@ -511,11 +612,14 @@
     const now = performance.now();
     if (!fpsMark) {
       fpsMark = now;
+      heldMark = swallowed;
       return;
     }
     if (now - fpsMark > 500) {
       state.fps = Math.round((fpsFrames * 1000) / (now - fpsMark));
+      state.held = Math.round(((swallowed - heldMark) * 1000) / (now - fpsMark));
       fpsMark = now;
+      heldMark = swallowed;
       fpsFrames = 0;
       updatePanel();
     }
@@ -540,7 +644,7 @@
         font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
         color: #e8e6df; background: rgba(12, 15, 20, 0.88);
         border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 8px;
-        padding: 10px 12px; pointer-events: auto; backdrop-filter: blur(8px);
+        padding: 10px 12px; pointer-events: auto;
         white-space: pre; letter-spacing: 0.02em;
       }
       .panel b { color: #ffd479; font-weight: 600; }
@@ -565,9 +669,14 @@
         letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
         color: #9ef29e; background: rgba(12, 15, 20, 0.82);
         border: 1px solid rgba(158, 242, 158, 0.35); border-radius: 999px;
-        padding: 5px 12px; pointer-events: auto; backdrop-filter: blur(8px);
+        padding: 5px 12px; pointer-events: auto;
       }
       .badge:hover { background: rgba(30, 45, 30, 0.95); }
+      /* Off by default. A blur over a canvas that changes every frame is a
+         compositor job with no payoff here, and the panel's own background is
+         already opaque enough to read. --blur puts it back. */
+      :host([data-blur='on']) .panel,
+      :host([data-blur='on']) .badge { backdrop-filter: blur(8px); }
       :host([data-mode='play']) .panel { display: none; }
       :host([data-mode='play']) .badge { display: block; }
     </style>
@@ -585,6 +694,7 @@
     <div class="badge">&larr; inspect</div>`;
   const info = shadow.querySelector('.info');
   const pauseButton = shadow.querySelector('button[data-act="pause"]');
+  const badge = shadow.querySelector('.badge');
 
   // One listener on the shadow root rather than on the buttons: the panel's
   // markup is rebuilt on every update, and delegated handlers survive that.
@@ -633,6 +743,23 @@
     return 'not found';
   }
 
+  /** Blur behind the panel: off unless asked for, since it is only decoration. */
+  function setBlur(on) {
+    state.blur = !!on;
+    if (state.blur) host.dataset.blur = 'on';
+    else delete host.dataset.blur;
+    return state.blur;
+  }
+
+  /** The pixel ratio the inspector's own canvas renders at. */
+  function setPixelRatio(value) {
+    const ratio = Number(value);
+    if (!Number.isFinite(ratio) || ratio <= 0) return state.pixelRatio;
+    state.pixelRatio = Math.min(ratio, 4);
+    ownRenderer?.setPixelRatio(state.pixelRatio);
+    return state.pixelRatio;
+  }
+
   function updatePanel() {
     if (!state.active) return;
     savePose();
@@ -649,6 +776,9 @@
     if (drawn && Number.isFinite(drawn.triangles)) {
       html += line('drawn', `${drawn.calls ?? 0} calls, ${drawn.triangles.toLocaleString()} tris`);
     }
+    // The draw calls the game is still asking for and not getting. Climbing
+    // means the game is running and the inspector is the one painting it.
+    if (state.held) html += line('held', `${state.held}/s`, 'good');
     html += line('state', state.frozen ? 'paused' : 'playing', state.frozen ? 'pause' : 'good');
     html += line('fps', String(state.fps));
     if (cam) html += line('eye', `${cam.x.toFixed(1)}, ${cam.y.toFixed(1)}, ${cam.z.toFixed(1)}`);
@@ -669,6 +799,11 @@
     info.innerHTML = html;
     pauseButton.textContent = state.frozen ? 'Resume' : 'Hold';
     pauseButton.className = state.frozen ? 'play' : 'pause';
+    // The badge is the whole interface while playing, and the frame rate is the
+    // one number worth having there: playing hands the draw call back, so what
+    // you feel is the game's own frame and this is the only way to tell that
+    // from the inspector still being in the way.
+    badge.textContent = state.fps ? `\u2190 inspect \u00b7 ${state.fps} fps` : '\u2190 inspect';
   }
 
   /**
@@ -695,7 +830,11 @@
       if (ctx2d) ctx2d.clearRect(0, 0, overlay.width, overlay.height);
       drag = null;
     } else {
-      // Take the three back. The camera follows on the next frame.
+      // Take the three back, and point them at wherever the game got to.
+      // Playing hands the camera to the game, which then drives it up the track;
+      // returning to the pose from before that is how you end up staring at the
+      // ground where the game used to be.
+      anchorToGame();
       takeOverDrawing();
       if (ownCanvas) ownCanvas.style.display = 'block';
       overlay.style.display = 'block';
@@ -963,12 +1102,13 @@
         + '(window.THREE = THREE, or the renderer itself) to make this game inspectable.';
       return;
     }
-    readInitialPose();
-    homePose = {
-      target: { ...state.target }, yaw: state.yaw, pitch: state.pitch, distance: state.distance,
-    };
+    anchorToGame();
     const restored = applySavedPose();
     takeOverDrawing();
+    // Armed after the first attempt, so a renderer the scan could not reach is
+    // still caught on the game's next frame. Harmless when the scan already
+    // found one: the watch declines to arm in that case.
+    watchForRenderer();
     document.body?.appendChild(overlay);
     document.body?.appendChild(host);
     host.dataset.mode = state.mode;
@@ -987,6 +1127,7 @@
 
   function stop() {
     if (!state.active) {
+      unwatchForRenderer();
       thaw();
       restoreRAF();
       return;
@@ -996,6 +1137,9 @@
     for (const off of listeners.splice(0)) {
       try { off(); } catch { /* already gone */ }
     }
+    // Before the draw call is handed back: a watch still armed would take it
+    // straight off the game again on the next frame.
+    unwatchForRenderer();
     releaseDrawing();
     overlay.remove();
     host.remove();
@@ -1046,6 +1190,8 @@
     reframe,
     clearPose,
     updatePanel,
+    setPixelRatio,
+    setBlur,
     status() {
       const stats = found.scene ? sceneStats(found.scene) : null;
       const cam = found.camera?.position;
@@ -1067,6 +1213,15 @@
         // camera remembered for next time.
         suppressed: hijacked.length > 0,
         swallowed,
+        // The same number the panel shows, as a rate: a total says the game has
+        // been drawing, a rate says it still is.
+        held: state.held,
+        // A renderer the game never exposed, found through the scene's own
+        // callback. `suppressed` is the claim that matters; this says how it
+        // was found.
+        privateRenderer: !!privateRenderer,
+        pixelRatio: ownRenderer?.getPixelRatio?.() ?? state.pixelRatio,
+        blur: state.blur,
         restored: !!state.restored,
         // What the renderer actually submitted last frame. "The loop is
         // running" and "the picture is being drawn" are different claims, and
