@@ -76,12 +76,27 @@ export class Session {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
+    this.listeners = new Map();
     this.closed = false;
     this.onClosed = null;
 
     socket.addEventListener('message', (event) => this.#receive(event.data));
     socket.addEventListener('close', () => this.#close());
     socket.addEventListener('error', () => this.#close());
+  }
+
+  /**
+   * Subscribe to a protocol event, e.g. Page.frameNavigated. Events are how a
+   * page tells you it has reloaded underneath you, which is the difference
+   * between an inspector that survives a refresh and one that quietly vanishes.
+   */
+  on(method, handler) {
+    if (!this.listeners.has(method)) this.listeners.set(method, []);
+    this.listeners.get(method).push(handler);
+    return () => {
+      const list = this.listeners.get(method);
+      if (list) this.listeners.set(method, list.filter((h) => h !== handler));
+    };
   }
 
   static async open(webSocketDebuggerUrl, { timeout = 8000 } = {}) {
@@ -107,7 +122,14 @@ export class Session {
     } catch {
       return;
     }
-    if (message.id === undefined) return; // an event, not a reply
+    if (message.id === undefined) {
+      const handlers = this.listeners.get(message.method);
+      if (!handlers) return;
+      for (const handler of handlers) {
+        try { handler(message.params ?? {}); } catch { /* one bad listener is not the socket's problem */ }
+      }
+      return;
+    }
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);

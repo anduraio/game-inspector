@@ -249,9 +249,83 @@
       y: camera.position.y + fy * distance,
       z: camera.position.z + fz * distance,
     };
+    // A game camera is usually pitched well down, so a target a fixed distance
+    // along its view can land under the floor -- and an orbit pivot under the
+    // floor swings you underground the moment you rotate. The world's floor is
+    // at y = 0 in every engine that uses the usual y-up convention. This only
+    // ever raises the pivot, and panning moves it wherever you want.
+    state.target.y = Math.max(state.target.y, 0);
     state.pitch = Math.asin(Math.max(-1, Math.min(1, -fy)));
     state.yaw = Math.atan2(-fx, -fz);
     state.distance = distance;
+  }
+
+  /** The pose the game's camera was in when the inspector arrived. */
+  let homePose = null;
+
+  /**
+   * Back to where the game was looking.
+   *
+   * Not "frame the whole scene": a game's scene is usually a small play area
+   * inside a very large ground and sky, so framing all of it puts the camera a
+   * quarter of a kilometre up looking at nothing. The useful place to return to
+   * is the one the game itself chose.
+   */
+  function resetView() {
+    if (!homePose) return;
+    state.target = { ...homePose.target };
+    state.yaw = homePose.yaw;
+    state.pitch = homePose.pitch;
+    state.distance = homePose.distance;
+  }
+
+  // Where you were looking, remembered per tab.
+  //
+  // A refresh used to put you back at the game's camera pose, which is the same
+  // place every time: you would fly somewhere, lose it to a reload, and start
+  // again. sessionStorage is per tab, so a fresh launch still starts fresh.
+  const POSE_KEY = 'game-inspector:pose';
+
+  function savePose() {
+    try {
+      sessionStorage.setItem(POSE_KEY, JSON.stringify({
+        target: state.target,
+        yaw: state.yaw,
+        pitch: state.pitch,
+        distance: state.distance,
+        // Paused is part of where you were: coming back from a reload with the
+        // world suddenly running is not what "still there" means.
+        paused: state.frozen,
+      }));
+    } catch { /* private mode, or storage full: the pose is a convenience, not a need */ }
+  }
+
+  function loadPose() {
+    try {
+      const pose = JSON.parse(sessionStorage.getItem(POSE_KEY) ?? 'null');
+      const finite = (v) => typeof v === 'number' && Number.isFinite(v);
+      if (!pose?.target) return null;
+      if (!['x', 'y', 'z'].every((axis) => finite(pose.target[axis]))) return null;
+      if (!['yaw', 'pitch', 'distance'].every((key) => finite(pose[key]))) return null;
+      return pose;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearPose() {
+    try { sessionStorage.removeItem(POSE_KEY); } catch { /* nothing to clear */ }
+  }
+
+  function applySavedPose() {
+    const pose = loadPose();
+    if (!pose) return false;
+    state.target = { ...pose.target };
+    state.yaw = pose.yaw;
+    state.pitch = pose.pitch;
+    state.distance = pose.distance;
+    if (pose.paused) freeze();
+    return true;
   }
 
   function basis() {
@@ -331,6 +405,48 @@
 
   let ownRenderer = null;
   let ownCanvas = null;
+  const hijacked = [];
+  let drawComposer = null;
+  let drawRenderer = null;
+  // How many times the game has asked to draw since we took the job off it.
+  // Not a problem to be fixed: it is how you tell a game that is playing but
+  // hidden from a game that has stopped.
+  let swallowed = 0;
+
+  /**
+   * Take the game's draw call away from it.
+   *
+   * Two reasons, and both of them are what make playing the game while
+   * inspecting it possible. Only one renderer can own a light's shadow map, so
+   * a game painting the same scene alongside us gives broken shadows. And
+   * whichever of the two draws last is the one you see, so leaving both in
+   * would make the picture depend on the order the browser happens to run its
+   * frame callbacks in.
+   *
+   * The game keeps simulating, animating and reading input. It just stops
+   * painting, and the inspector paints instead.
+   */
+  function takeOverDrawing() {
+    const hijack = (object, key) => {
+      if (!object || typeof object[key] !== 'function') return null;
+      const original = object[key];
+      object[key] = function inspectorDrawsThisNow() { swallowed++; };
+      hijacked.push({ object, key, original });
+      return (...args) => original.apply(object, args);
+    };
+    // The composer first: it calls the renderer underneath it, so grabbing the
+    // renderer alone would swallow the inspector's own draw as well.
+    drawComposer = hijack(found.composer, 'render');
+    drawRenderer = hijack(found.renderer, 'render');
+  }
+
+  function releaseDrawing() {
+    for (const { object, key, original } of hijacked.splice(0)) {
+      try { object[key] = original; } catch { /* the object went away with the page */ }
+    }
+    drawComposer = null;
+    drawRenderer = null;
+  }
 
   function ensureRenderer() {
     if (found.renderer || ownRenderer) return true;
@@ -340,7 +456,11 @@
     ownCanvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;'
       + 'z-index:2147482000;background:#000;display:block';
     document.body.appendChild(ownCanvas);
-    ownRenderer = new THREE.WebGLRenderer({ canvas: ownCanvas, antialias: true });
+    // preserveDrawingBuffer costs a little speed and buys reliable screenshots:
+    // without it the browser may hand back a cleared buffer, which makes a tool
+    // for looking at things unable to show anyone what it saw. It only affects
+    // the canvas the inspector owns.
+    ownRenderer = new THREE.WebGLRenderer({ canvas: ownCanvas, antialias: true, preserveDrawingBuffer: true });
     ownRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     ownRenderer.setSize(window.innerWidth, window.innerHeight, false);
     // Match the two settings that change how the scene looks, so the picture
@@ -362,8 +482,8 @@
     if (!state.active) return;
     applyCamera();
     try {
-      if (state.useComposer && found.composer) found.composer.render();
-      else if (found.renderer) found.renderer.render(found.scene, found.camera);
+      if (state.useComposer && drawComposer) drawComposer();
+      else if (drawRenderer) drawRenderer(found.scene, found.camera);
       else if (ownRenderer) ownRenderer.render(found.scene, found.camera);
       state.error = null;
     } catch (err) {
@@ -408,10 +528,39 @@
       .panel b { color: #ffd479; font-weight: 600; }
       .panel .dim { color: rgba(232, 230, 223, 0.55); }
       .panel .bad { color: #ff8080; }
+      .panel .good { color: #9ef29e; }
       .panel .key { color: #9fd0ff; }
+      .panel .row { display: flex; gap: 6px; margin-top: 8px; }
+      .panel button {
+        font: inherit; letter-spacing: 0.06em; text-transform: uppercase;
+        color: inherit; background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 5px;
+        padding: 4px 8px; cursor: pointer; pointer-events: auto; flex: 1;
+      }
+      .panel button:hover { background: rgba(255, 255, 255, 0.15); }
+      .panel button.play { color: #9ef29e; }
+      .panel button.pause { color: #ffd479; }
     </style>
     <div class="panel"></div>`;
   const panel = shadow.querySelector('.panel');
+
+  // One listener on the shadow root rather than on the buttons: the panel's
+  // markup is rebuilt on every update, and delegated handlers survive that.
+  shadow.addEventListener('click', (event) => {
+    const action = event.target?.dataset?.act;
+    if (!action) return;
+    event.stopPropagation();
+    if (action === 'pause') { if (state.frozen) thaw(); else freeze(); }
+    else if (action === 'reset') resetView();
+    else if (action === 'stop') { stop(); return; }
+    updatePanel();
+  });
+
+  /** Is this event from the panel? It is the one thing on the page that is ours to click. */
+  function insidePanel(event) {
+    const path = event.composedPath?.() ?? [];
+    return path.includes(host) || path.some((node) => node?.classList?.contains?.('panel'));
+  }
 
   function line(label, value, cls = '') {
     return `${label.padEnd(8)} ${cls ? `<span class="${cls}">${value}</span>` : value}\n`;
@@ -427,14 +576,22 @@
 
   function updatePanel() {
     if (!state.active) return;
+    savePose();
     const stats = found.scene ? sceneStats(found.scene) : null;
     const cam = found.camera?.position;
+    const mode = renderMode();
+    const drawn = (ownRenderer ?? found.renderer)?.info?.render;
     let html = '<b>game-inspector</b>\n';
     html += line('scene', found.scene ? `ok (${stats.objects} objects)` : 'not found', found.scene ? '' : 'bad');
     html += line('camera', found.camera ? (found.camera.type ?? 'ok') : 'not found', found.camera ? '' : 'bad');
-    html += line('render', renderMode(), found.renderer || ownRenderer ? '' : 'bad');
+    html += line('render', mode, found.renderer || ownRenderer ? '' : 'bad');
     if (stats) html += line('', `${stats.meshes} meshes, ${stats.triangles.toLocaleString()} tris`);
-    html += line('fps', state.frozen ? `${state.fps} (frozen)` : String(state.fps));
+    // Not every renderer keeps counts here, and a game's own may keep none.
+    if (drawn && Number.isFinite(drawn.triangles)) {
+      html += line('drawn', `${drawn.calls ?? 0} calls, ${drawn.triangles.toLocaleString()} tris`);
+    }
+    html += line('state', state.frozen ? 'paused' : 'playing', state.frozen ? 'pause' : 'good');
+    html += line('fps', String(state.fps));
     if (cam) html += line('eye', `${cam.x.toFixed(1)}, ${cam.y.toFixed(1)}, ${cam.z.toFixed(1)}`);
     html += line('target', `${state.target.x.toFixed(1)}, ${state.target.y.toFixed(1)}, ${state.target.z.toFixed(1)}`);
     html += line('dist', state.distance.toFixed(2));
@@ -445,9 +602,14 @@
     }
     if (state.error) html += line('error', state.error, 'bad');
     html += '\n<span class="dim">drag orbit &middot; wheel zoom &middot; right/shift pan</span>\n';
-    html += '<span class="dim">click pick &middot; </span><span class="key">F</span><span class="dim"> freeze &middot; </span>'
-      + '<span class="key">B</span><span class="dim"> bounds &middot; </span><span class="key">R</span><span class="dim"> reframe &middot; </span>'
+    html += '<span class="dim">click pick &middot; </span><span class="key">B</span><span class="dim"> bounds &middot; </span>'
+      + '<span class="key">C</span><span class="dim"> composer &middot; </span><span class="key">R</span><span class="dim"> reset view &middot; </span>'
       + '<span class="key">Esc</span><span class="dim"> stop</span>';
+    html += '<div class="row">'
+      + `<button data-act="pause" class="${state.frozen ? 'play' : 'pause'}">${state.frozen ? 'Play' : 'Pause'}</button>`
+      + '<button data-act="reset">Reset view</button>'
+      + '<button data-act="stop">Stop</button>'
+      + '</div>';
     panel.innerHTML = html;
   }
 
@@ -555,7 +717,7 @@
   function shield(type, handler, options = {}) {
     listen(window, type, (event) => {
       if (!state.active) return;
-      if (event.target?.closest?.('.panel')) return;
+      if (insidePanel(event)) return; // the panel is ours to click
       handler(event);
       event.stopPropagation();
       event.preventDefault?.();
@@ -611,10 +773,10 @@
         case 'ArrowRight': orbit(8, 0); break;
         case '+': case '=': dolly(0.9); break;
         case '-': case '_': dolly(1.1); break;
-        case 'f': case 'F': state.frozen ? thaw() : freeze(); break;
+        case 'f': case 'F': case 'p': case 'P': state.frozen ? thaw() : freeze(); break;
         case 'b': case 'B': state.showBounds = !state.showBounds; break;
         case 'c': case 'C': state.useComposer = !state.useComposer; break;
-        case 'r': case 'R': reframe(); break;
+        case 'r': case 'R': resetView(); break;
         case 'Escape': stop(); return;
         default: return;
       }
@@ -680,12 +842,21 @@
       return;
     }
     readInitialPose();
+    homePose = {
+      target: { ...state.target }, yaw: state.yaw, pitch: state.pitch, distance: state.distance,
+    };
+    const restored = applySavedPose();
+    takeOverDrawing();
     document.body?.appendChild(overlay);
     document.body?.appendChild(host);
     if (ownRenderer) listen(window, 'resize', resizeOwnCanvas);
     installInput();
-    freeze();
+    // Deliberately not frozen. Taking the draw call is what makes the camera
+    // safe, so the game can keep running: animations keep animating, trains
+    // keep moving, and the world is not the same frozen place every time.
+    // Pausing is a button, for when you want it to hold still.
     state.active = true;
+    state.restored = restored;
     fpsMark = 0;
     updatePanel();
     rafId = realRAF(renderFrame);
@@ -702,6 +873,7 @@
     for (const off of listeners.splice(0)) {
       try { off(); } catch { /* already gone */ }
     }
+    releaseDrawing();
     overlay.remove();
     host.remove();
     if (ctx2d) ctx2d.clearRect(0, 0, overlay.width, overlay.height);
@@ -739,11 +911,15 @@
     stop,
     freeze,
     thaw,
+    /** Pause or resume the game's loop. The camera stays where you put it either way. */
+    pause(on = true) { if (on) freeze(); else thaw(); },
     orbit,
     dolly,
     pan,
     pick,
+    resetView,
     reframe,
+    clearPose,
     updatePanel,
     status() {
       const stats = found.scene ? sceneStats(found.scene) : null;
@@ -761,6 +937,19 @@
         },
         renderMode: found.composer && state.useComposer ? 'composer'
           : found.renderer ? 'game' : ownRenderer ? 'own' : 'none',
+        // Did the inspector take the game's draw call, and where you left the
+        // camera remembered for next time.
+        suppressed: hijacked.length > 0,
+        swallowed,
+        restored: !!state.restored,
+        // What the renderer actually submitted last frame. "The loop is
+        // running" and "the picture is being drawn" are different claims, and
+        // the second is the one that matters when the screen looks empty.
+        drawn: (() => {
+          const info = (ownRenderer ?? found.renderer)?.info?.render;
+          if (!info || !Number.isFinite(info.triangles)) return null;
+          return { calls: info.calls ?? 0, triangles: info.triangles };
+        })(),
         stats,
         frames: state.frames,
         fps: state.fps,

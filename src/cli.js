@@ -31,6 +31,7 @@ Options
   --distance <n>      how far to start from the subject, in world units (default 12)
   --wait <seconds>    how long to wait for the page to build a scene (default 15)
   --no-borrow         do not try to import Three.js from the page's dev server
+  --once              inject and exit instead of staying to re-inject on reload
   --list              list inspectable pages and exit
   --status            report what the inspector found, without starting one
   --stop              remove the inspector from the page
@@ -44,11 +45,15 @@ Controls, once attached
   WASD / QE           fly the target
   arrows              orbit
   click               pick an object and box it
-  F                   freeze / unfreeze the game's loop
   B                   toggle the picked object's bounds
-  C                   toggle composer vs raw renderer
+  C                   composer vs raw renderer
   R                   reframe on the whole scene
   Esc                 stop
+
+The game keeps playing while you fly around it. Pause it from the panel, or
+with F, when you want it to hold still. Where you were looking is remembered
+per tab, so a refresh puts you back where you were rather than at the camera's
+pose again.
 
 Chrome has to be started with a debugging port open. Either pass --launch, or
 start it yourself:
@@ -59,9 +64,9 @@ start it yourself:
 
 function parseArgs(argv) {
   const options = {
-    url: null, port: 9222, host: '127.0.0.1', launch: false, headed: false,
-    chrome: null, distance: null, wait: 15, borrow: true, list: false, status: false,
-    stop: false, json: false, help: false,
+    url: null, port: 9222, host: '127.0.0.1', launch: false, headed: null,
+    chrome: null, distance: null, wait: 15, borrow: true, watch: true, list: false,
+    status: false, stop: false, json: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -81,6 +86,7 @@ function parseArgs(argv) {
       case '--distance': case '-d': options.distance = Number(next()); break;
       case '--wait': case '-w': options.wait = Number(next()); break;
       case '--no-borrow': options.borrow = false; break;
+      case '--once': case '--no-watch': options.watch = false; break;
       case '--list': options.list = true; break;
       case '--status': options.status = true; break;
       case '--stop': options.stop = true; break;
@@ -207,11 +213,27 @@ async function main() {
   let launched = null;
   if (options.launch) {
     if (!options.url) throw new CdpError('--launch needs --url, or a bare url, to know what to open');
+
+    // A browser cannot bind a port something else is already holding, and the
+    // wait for it to come up would then succeed against whatever is already
+    // there -- silently attaching to the wrong browser. Say so instead.
+    const taken = await listTargets({ port: options.port, host: options.host, timeout: 800 })
+      .then(() => true, () => false);
+    if (taken) {
+      throw new CdpError(
+        `something is already answering on ${options.host}:${options.port}. Attach to it by `
+        + 'dropping --launch, or start a second browser on another port with --port <n>.',
+      );
+    }
+
+    // Opening a browser is what you do when you want to look at something, so
+    // it is a window unless --headless is asked for.
+    const headed = options.headed ?? true;
     launched = await launchChrome({
       url: options.url,
       port: options.port,
       chrome: options.chrome,
-      headless: !options.headed,
+      headless: !headed,
     });
     if (!options.json) say(`launched ${launched.binary} on port ${options.port}`);
   }
@@ -273,6 +295,48 @@ async function main() {
         say(`the browser is a throwaway profile at ${launched.profile}; close the window when done.`);
       }
     }
+
+    // Stay attached and put the inspector back after a reload.
+    //
+    // An injected script does not survive a navigation -- a refresh, a hot
+    // reload, a route change all wipe it -- which made the tool useless for
+    // anything longer than one look. Watching the page costs one line of CDP
+    // and means the inspector is simply still there, in the same place, on the
+    // other side of a refresh.
+    if (options.watch && !options.json) {
+      let reinjecting = false;
+      session.on('Page.frameNavigated', async ({ frame }) => {
+        if (reinjecting || (frame && frame.parentId)) return;
+        reinjecting = true;
+        if (!options.json) say('\nthe page navigated: putting the inspector back...');
+        try {
+          const again = await startInspector(session, options);
+          if (!options.json) {
+            say(again.active
+              ? `back${again.restored ? ', where you left it' : ''}. Ctrl-C when you are done.`
+              : `could not put it back: ${again.error}`);
+          }
+        } catch (err) {
+          if (!options.json) say(`could not put it back: ${err.message}`);
+        } finally {
+          reinjecting = false;
+        }
+      });
+      await session.send('Page.enable');
+
+      if (!options.json) say('watching for reloads. Ctrl-C to stop.');
+      // Hold the process open: the session has to stay alive for any of this
+      // to keep working.
+      await new Promise((resolve) => {
+        process.on('SIGINT', resolve);
+        process.on('SIGTERM', resolve);
+        session.onClosed = resolve;
+        session.socket?.addEventListener('close', resolve);
+      });
+      session.close();
+      return 0;
+    }
+
     return 0;
   } finally {
     session.close();

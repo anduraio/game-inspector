@@ -11,6 +11,9 @@ pull back over a level, box an object to see where it actually is.
 game-inspector --launch --url http://localhost:5174
 ```
 
+The game keeps playing while you fly around it. Pause it when you want it to hold
+still, and the inspector stays attached across reloads.
+
 ```
 launched /Applications/Google Chrome.app/... on port 9222
 game-inspector
@@ -34,10 +37,10 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | `WASD` `QE` | fly the target |
 | arrows | orbit |
 | click | pick an object and box it |
-| `F` | freeze / unfreeze the game's loop |
+| `P` / the Pause button | pause and resume the game |
 | `B` | toggle the picked object's bounds |
 | `C` | composer vs raw renderer |
-| `R` | reframe on the whole scene |
+| `R` / Reset view | back to where the game was looking |
 | `Esc` | stop |
 
 ## Why this is not the harness
@@ -75,15 +78,37 @@ puts its scene on a global or one object inside one; going deeper means walking
 the DOM, every extension's globals and every library the page ever loaded, for
 nothing.
 
+## It stays
+
+Two things used to make this a tool for one look at a time.
+
+**A reload used to take the inspector with it.** An injected script does not
+survive a navigation, and a hot reload is a navigation. The CLI stays attached
+and puts it back when the page moves on, so a refresh, an HMR reload or a route
+change leaves you with an inspector still running.
+
+**A refresh used to put you back at the game's camera pose**, which is the same
+place every time: fly somewhere worth looking at, lose it, start again. Where you
+were looking is kept per tab — target, angle, distance, and whether you had it
+paused — so coming back from a reload means coming back to the same view. A
+fresh launch still starts fresh, since a new tab has nothing remembered.
+
 ## What it does to the page
 
 Worth knowing before you point it at something.
 
-**It freezes the game.** `requestAnimationFrame` is replaced, and callbacks asked
-for while frozen are held rather than dropped — a game schedules its next frame
-from inside the current one, so dropping that request would kill the loop for
-good and unfreezing would hand back a loop nobody was going to call. They are
-replayed on thaw. `F` toggles it, `stop` restores it.
+**It takes the game's draw call.** Not to stop the game, but so that only one
+thing paints. Two renderers on one scene fight over a light's shadow map, and
+whichever paints last is the one you see, so leaving both in would make the
+picture depend on the order the browser runs its callbacks in. The game keeps
+simulating, animating and reading input — it just stops painting, and the
+inspector paints instead. Stopping hands the call back.
+
+**It pauses only when you ask.** `requestAnimationFrame` is replaced, and
+callbacks asked for while paused are held rather than dropped — a game schedules
+its next frame from inside the current one, so dropping that request would kill
+the loop for good and resuming would hand back a loop nobody was going to call.
+They are replayed on resume. The Pause button, `P`, and `stop` all restore it.
 
 **It drives the game's own camera.** Position and aim are set every frame from
 the orbit state, starting from the pose the game was already in, so the view
@@ -144,9 +169,17 @@ touched. To do it yourself:
 - **It needs a browser it can attach to.** Chrome or Chromium with a debugging
   port. A page inside a cross-origin iframe is a separate target and has to be
   attached to directly.
-- **Freezing needs the game to go through `window.requestAnimationFrame`.** A
-  game that captured a private reference to it before this ran keeps ticking, and
-  then its own camera code keeps overwriting the inspector's.
+- **Pausing needs the game to go through `window.requestAnimationFrame`.** A game
+  that captured a private reference to it before this ran keeps ticking. The
+  camera is still safe — the draw call is what the inspector holds — but the
+  world will not hold still.
+- **A game that hides its renderer keeps painting underneath.** The inspector
+  cannot take a draw call it cannot find, so with its own renderer built from
+  THREE the game renders as well, invisibly, and the work is wasted. Nothing
+  looks wrong; it is a GPU cost.
+- **Reset view needs a pose to return to.** It goes back to where the game's
+  camera was when the inspector arrived, which is right unless the game was
+  mid-boot at the time.
 - **Post-processing is only kept if a composer is found.** Rendering straight
   through the renderer skips it, which is usually what you want when judging
   geometry and is a visible difference if you were looking at the final look.
@@ -165,21 +198,25 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 37 checks, in a real browser
+npm test        # 47 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and
 attaches over this project's own CDP client. It checks what actually happened
-rather than what was called: that the game's loop stopped and then came back,
-that the camera was aimed at the orbit target every frame, that the eye sits
-exactly `distance` from the target after an orbit, that picking the middle of the
-screen finds the mesh that is there, that the panel is in a shadow root, that a
-game with no reachable renderer gets one built for it, and that a page with no
-scene refuses to start with a reason.
+rather than what was called: that the game keeps playing while the inspector is
+up and that its draw calls are being taken over, that pausing stops it and
+resuming lets it go, that the camera is aimed at the orbit target every frame,
+that the eye sits exactly `distance` from the target after a swing, that picking
+the middle of the screen finds the mesh that is there, that the panel is in a
+shadow root, that a game with no reachable renderer gets one built for it, and
+that a page with no scene refuses to start with a reason.
 
 The assertions are deliberately plain — a counter and an `expect`. A tool graded
 by itself passes no matter what is broken.
 
-Two of its checks exist because the first version of this failed them: the camera
-it found was a light's shadow camera, and freezing the loop killed it permanently
-instead of pausing it.
+Several of its checks exist because an earlier version of this failed them: the
+camera it found was a light's shadow camera, freezing the loop killed it
+permanently instead of pausing it, the whole search never looked past the first
+object because a local variable shadowed the depth it was given, and Reset view
+used to frame the entire scene — which on a scene with a large ground and a sky
+dome means pointing the camera at the sky.

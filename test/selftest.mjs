@@ -85,10 +85,9 @@ async function main() {
       format: 'jpeg', quality: 1, maxWidth: 32, maxHeight: 32, everyNthFrame: 1,
     });
 
-    // --- the loop is running, then it is not ------------------------------
-    // Measured before injection, because freezing lets whatever frame was
-    // already in flight land: sampling straight after injection is a race with
-    // that last frame.
+    // --- it plays rather than freezing --------------------------------
+    // Taking the draw call is what makes the camera safe, so the game is left
+    // running: the world keeps moving while you fly around it.
     const runningA = await session.evaluate('window.__fixtureFrames');
     await sleep(200);
     const runningB = await session.evaluate('window.__fixtureFrames');
@@ -100,21 +99,31 @@ async function main() {
     expect('injecting finds the camera', status.found?.camera === true, raw);
     expect('injecting finds the renderer', status.found?.renderer === true, raw);
     expect('and draws with the game\'s own one', status.renderMode === 'game', status.renderMode);
-    expect('it did not mistake anything else for a scene', status.found.children === 2, `${status.found.children}`);
+    expect('it did not mistake anything else for a scene', status.found?.children === 2, `${status.found?.children}`);
     expect('it counts what is in the scene',
       status.stats?.meshes === 2 && status.stats.triangles === 24, JSON.stringify(status.stats));
 
-    await sleep(200); // let the frame that was already in flight land
-    const before = await session.evaluate('window.__fixtureFrames');
-    await sleep(400);
-    const after = await session.evaluate('window.__fixtureFrames');
-    expect('the game loop stops when the inspector takes over', after === before, `${before} -> ${after}`);
+    const playingA = await session.evaluate('window.__fixtureFrames');
+    const playingB = await waitFor(session, 'window.__fixtureFrames', (v) => v > playingA, { timeout: 6000 });
+    expect('the game keeps playing while the inspector is up', playingB > playingA, `${playingA} -> ${playingB}`);
+    expect('and the inspector did not freeze it', status.frozen === false, `${status.frozen}`);
+
+    // The game is still asking to draw every frame; the inspector is the one
+    // answering. That is the difference between a game that is playing but
+    // hidden and a game that has stopped.
+    const swallowed = await session.evaluate('window.__GAME_INSPECTOR__.status().swallowed');
+    await sleep(300);
+    const swallowedLater = await session.evaluate('window.__GAME_INSPECTOR__.status().swallowed');
+    expect('the game\'s draw calls are being taken over', swallowedLater > swallowed, `${swallowed} -> ${swallowedLater}`);
+    expect('and it is the inspector painting instead',
+      await session.evaluate('window.__GAME_INSPECTOR__.status().renderMode') === 'game');
 
     // --- the camera is ours --------------------------------------------
     // The inspector starts from the pose the game was already in: the eye
     // where the game left it, and the target one distance along the direction
     // the game camera was looking. The fixture looks down (0,-1,-2)/sqrt(5)
     // from (0,5,10), so everything below is checkable by hand.
+    // Checked before anything moves the camera, which is the whole point of it.
     const pose = await session.evaluate(
       '(() => { const c = window.__fixture.camera; const i = window.__GAME_INSPECTOR__;'
       + 'return { eye: { x: c.position.x, y: c.position.y, z: c.position.z },'
@@ -123,14 +132,47 @@ async function main() {
     const unit = 1 / Math.sqrt(5);
     const forward = { x: 0, y: -unit, z: -2 * unit };
     const expected = {
-      x: 0 + forward.x * 12, y: 5 + forward.y * 12, z: 10 + forward.z * 12,
+      x: 0 + forward.x * 12,
+      // The pivot is never left under the floor: a camera pitched down puts a
+      // fixed-distance target below y = 0, and orbiting that swings you under it.
+      y: Math.max(5 + forward.y * 12, 0),
+      z: 10 + forward.z * 12,
     };
     const near = (a, b, tol = 0.001) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < tol;
     expect('the target is one distance along the direction the game was looking',
       near(pose.target, expected), `${JSON.stringify(pose.target)} vs ${JSON.stringify(expected)}`);
+    expect('and the pivot is not left under the floor', pose.target.y >= 0, `${pose.target.y}`);
     expect('the camera is aimed at the target every frame', pose.lookAtCalls > 3, `${pose.lookAtCalls} calls`);
-    expect('and the orbit maths reconstructs the eye it was handed',
-      near(pose.eye, { x: 0, y: 5, z: 10 }, 0.01), JSON.stringify(pose.eye));
+    // The view direction is the thing that has to survive the round trip: the
+    // eye is rebuilt from the target along these angles, so it lands where the
+    // game camera was looking rather than exactly where it was standing.
+    const lookedAt = {
+      x: (pose.target.x - pose.eye.x) / pose.distance,
+      y: (pose.target.y - pose.eye.y) / pose.distance,
+      z: (pose.target.z - pose.eye.z) / pose.distance,
+    };
+    expect('and it is looking the way the game camera was looking',
+      near(lookedAt, forward, 0.01), `${JSON.stringify(lookedAt)} vs ${JSON.stringify(forward)}`);
+
+    // --- pause and play -----------------------------------------------
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(true)');
+    await sleep(200); // let the frame already in flight land
+    const pausedA = await session.evaluate('window.__fixtureFrames');
+    await sleep(300);
+    const pausedB = await session.evaluate('window.__fixtureFrames');
+    expect('pausing stops the game', pausedB === pausedA, `${pausedA} -> ${pausedB}`);
+    expect('and the panel says so',
+      await session.evaluate('window.__GAME_INSPECTOR__.status().frozen === true'));
+
+    const camWhilePaused = await session.evaluate('JSON.stringify(window.__fixture.camera.position)');
+    await session.evaluate('window.__GAME_INSPECTOR__.orbit(30, 0)');
+    await nextFrame(session);
+    expect('the camera still works while paused',
+      await session.evaluate('JSON.stringify(window.__fixture.camera.position)') !== camWhilePaused);
+
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(false)');
+    const resumed = await waitFor(session, 'window.__fixtureFrames', (v) => v > pausedB, { timeout: 5000 });
+    expect('playing lets it go again', resumed > pausedB, `${pausedB} -> ${resumed}`);
 
     // --- rendering ------------------------------------------------------
     const rendered = await session.evaluate(
@@ -189,10 +231,19 @@ async function main() {
     await session.evaluate('window.__GAME_INSPECTOR__.stop()');
     const stopped = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
     expect('stop() takes the inspector off the page', stopped.active === false && stopped.overlay === false && stopped.panel === false, JSON.stringify(stopped));
+    expect('and stops taking the draw calls over', stopped.suppressed === false, JSON.stringify(stopped));
+
+    const draws = await session.evaluate('window.__fixture.renderer.calls');
+    await sleep(300);
+    expect('the game is painting for itself again',
+      await session.evaluate('window.__fixture.renderer.calls') > draws,
+      `${draws} -> ${await session.evaluate('window.__fixture.renderer.calls')}`);
+    expect('the render method it was given back is its own',
+      !(await session.evaluate('String(window.__fixture.renderer.render)')).includes('inspectorDrawsThisNow'));
 
     const restarted = await session.evaluate('window.__fixtureFrames');
     const later = await waitFor(session, 'window.__fixtureFrames', (v) => v > restarted, { timeout: 5000 });
-    expect('and hands the game its loop back', later > restarted, `${restarted} -> ${later}`);
+    expect('and its loop is still the one it started with', later > restarted, `${restarted} -> ${later}`);
     expect('the patched requestAnimationFrame is restored',
       await session.evaluate('window.requestAnimationFrame.toString().includes("native code")'),
       await session.evaluate('String(window.requestAnimationFrame).slice(0, 60)'));

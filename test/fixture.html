@@ -86,17 +86,27 @@
 
   const renderer = {
     domElement: document.getElementById('game'),
-    info: { render: {} },
+    // A real renderer keeps counters here, so this one does too.
+    info: { render: { calls: 0, triangles: 0 } },
     calls: 0,
     lastScene: null,
     lastCamera: null,
-    render(s, c) { this.calls++; this.lastScene = s; this.lastCamera = c; },
+    render(s, c) {
+      this.calls++;
+      this.info.render.calls++;
+      this.info.render.triangles += 24;
+      this.lastScene = s;
+      this.lastCamera = c;
+    },
   };
 
   let frames = 0;
   function tick() {
     frames++;
     window.__fixtureFrames = frames;
+    // A real game draws every frame. This one has to as well, or there is
+    // nothing for the inspector to take off it.
+    renderer.render(scene, camera);
     window.requestAnimationFrame(tick);
   }
   window.requestAnimationFrame(tick);
