@@ -44,6 +44,7 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | click | pick an object and box it |
 | `P` / Hold | hold the world still while you look at it (the button says Resume while held) |
 | `` ` `` / Play game | hand the game back: camera, input and all (the badge then shows the game's frame rate) |
+| the badge | take it all back and hold the world still |
 | `B` | toggle the picked object's bounds |
 | `C` | composer vs raw renderer |
 | `R` / Reset view | point the inspector back at wherever the game is looking now |
@@ -104,8 +105,14 @@ an orbit and a gesture at the game, and one camera cannot be both the inspector'
 and the game's. So it is a mode, not a setting.
 
 **Inspecting** takes the camera, the draw call and the input. The game keeps
-running — the world is not a frozen diorama — but it never sees a keystroke. This
-is the mode for looking at things.
+running — the world is not a frozen diorama every time you attach — but it never
+sees a keystroke. This is the mode for looking at things.
+
+**Coming back to it holds the world still.** Reaching for the badge is the moment
+you have stopped playing and started looking, and a world that carries on makes
+that harder rather than better: whatever you turned to look at has moved by the
+time you have found it, and a game that streams its world takes it away
+altogether. `P` starts it again, and the panel says which it is either way.
 
 **Playing** hands all three back. The game paints its own frame with its own
 post-processing, reads the keyboard and the pointer exactly as it always does, and
@@ -150,11 +157,14 @@ picture depend on the order the browser runs its callbacks in. The game keeps
 simulating, animating and reading input — it just stops painting, and the
 inspector paints instead. Stopping hands the call back.
 
-**It pauses only when you ask.** `requestAnimationFrame` is replaced, and
-callbacks asked for while paused are held rather than dropped — a game schedules
-its next frame from inside the current one, so dropping that request would kill
-the loop for good and resuming would hand back a loop nobody was going to call.
-They are replayed on resume. The Pause button, `P`, and `stop` all restore it.
+**It holds the world still when you ask it to, and when you go back to looking.**
+`requestAnimationFrame` is replaced, and callbacks asked for while held are kept
+rather than dropped — a game schedules its next frame from inside the current one,
+so dropping that request would kill the loop for good and resuming would hand back
+a loop nobody was going to call. They are replayed on resume. The Hold button, `P`
+and `stop` all restore it, and so does going back to playing. Because "whether you
+had it held" is part of where you were, it survives a reload with the rest of the
+pose — the panel says Resume if it came back held.
 
 **It drives the game's own camera.** Position and aim are set every frame from
 the orbit state, starting from the pose the game was already in, so the view
@@ -276,7 +286,7 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 74 checks, in a real browser
+npm test        # 78 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and

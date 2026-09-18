@@ -355,6 +355,28 @@ async function main() {
     await nextFrame(session);
     const backToInspect = JSON.parse(await session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.status())'));
     expect('switching back takes the draw call again', backToInspect.suppressed === true && backToInspect.mode === 'inspect', JSON.stringify({ mode: backToInspect.mode, suppressed: backToInspect.suppressed }));
+    // Taking the camera back is a decision to look rather than to play, so the
+    // world is held still for it: the thing you turned to look at has otherwise
+    // moved by the time you have found it.
+    expect('and it holds the world still to look at', backToInspect.frozen === true,
+      `frozen=${backToInspect.frozen}`);
+    const heldA = await session.evaluate('window.__fixtureFrames');
+    await sleep(300);
+    expect('so the game is no longer ticking',
+      await session.evaluate('window.__fixtureFrames') === heldA,
+      `${heldA} -> ${await session.evaluate('window.__fixtureFrames')}`);
+    expect('and the panel offers to resume it', await session.evaluate(
+      `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('button[data-act="pause"]').textContent`,
+    ) === 'Resume');
+    // The inspector's own loop is separate and must keep running: a held world
+    // that also stopped being drawn would be a blank screen rather than a
+    // still one.
+    await nextFrame(session);
+
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(false)');
+    const unheld = await waitFor(session, 'window.__fixtureFrames', (v) => v > heldA, { timeout: 5000 });
+    expect('and P still lets it go again', unheld > heldA, `${heldA} -> ${unheld}`);
+
     // The fixture looks down (0,-1,-2)/sqrt(5), so the pivot is that far along
     // its view from wherever the camera now is, with the floor clamp. Derived
     // from the distance in force rather than a literal, because the zoom is the
@@ -402,6 +424,13 @@ async function main() {
     // The common case in the wild: the scene is reachable, the renderer is not,
     // because nothing ever needed it on a global. If the page has a Three.js
     // namespace the inspector builds its own renderer rather than giving up.
+    //
+    // Forgetting the remembered pose first, because "whether you had it paused"
+    // is part of it and is deliberately carried across a reload: the section
+    // above ends by taking the camera back, which holds the world, so without
+    // this the next page would come up held and its game would never render --
+    // and this section is about a game that renders.
+    await session.evaluate('window.__GAME_INSPECTOR__.clearPose(); 1');
     await session.send('Page.stopScreencast').catch(() => {});
     await session.send('Page.navigate', { url: `${FIXTURE}?no-renderer` });
     await waitFor(session, 'typeof window.game', (v) => v === 'object');

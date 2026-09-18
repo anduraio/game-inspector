@@ -813,6 +813,12 @@
    * cannot be both the inspector's and the game's, so this is a mode rather than
    * a setting. Inspecting takes the camera, the draw call and the input;
    * playing hands all three back and leaves a panel watching.
+   *
+   * Taking the camera back holds the world still as well. Reaching for the badge
+   * is the moment you have stopped playing and started looking, and a world that
+   * keeps moving makes that harder rather than better: the thing you turned to
+   * look at has moved by the time you have found it, and a game that streams its
+   * world takes it away entirely. P resumes it, and the panel says which it is.
    */
   function setMode(mode) {
     if (mode !== 'play' && mode !== 'inspect') return;
@@ -836,6 +842,7 @@
       // ground where the game used to be.
       anchorToGame();
       takeOverDrawing();
+      freeze();
       if (ownCanvas) ownCanvas.style.display = 'block';
       overlay.style.display = 'block';
     }
@@ -1114,10 +1121,12 @@
     host.dataset.mode = state.mode;
     if (ownRenderer) listen(window, 'resize', resizeOwnCanvas);
     installInput();
-    // Deliberately not frozen. Taking the draw call is what makes the camera
-    // safe, so the game can keep running: animations keep animating, trains
-    // keep moving, and the world is not the same frozen place every time.
-    // Pausing is a button, for when you want it to hold still.
+    // Deliberately not frozen on the way in. Taking the draw call is what makes
+    // the camera safe, so the game can keep running: animations keep animating,
+    // trains keep moving, and the world is not the same frozen place every time
+    // you attach. Pausing is a button for when you want it to hold still -- and
+    // taking the camera back off the game, which is a decision to look rather
+    // than to play, holds it too. See setMode.
     state.active = true;
     state.restored = restored;
     fpsMark = 0;
