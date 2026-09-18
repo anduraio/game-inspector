@@ -169,6 +169,12 @@ window.GAME = { scene, camera, renderer };   // or just hand over what it needs
 
 ## Other ways in
 
+**Killing the browser kills the inspector** — it is a script inside the page, so
+it cannot outlive the tab. The CLI notices the socket close and exits by itself,
+and collects the throwaway profile on the way out. Stopping the *CLI* is the
+different case: the inspector stays in the page and keeps working, you just lose
+the reload recovery until you run it again.
+
 ```bash
 game-inspector                          # attach to a Chrome already on 9222
 game-inspector --url localhost:5174     # pick the tab by url substring

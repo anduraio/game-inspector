@@ -32,6 +32,12 @@ Options
   --wait <seconds>    how long to wait for the page to build a scene (default 15)
   --no-borrow         do not try to import Three.js from the page's dev server
   --once              inject and exit instead of staying to re-inject on reload
+  --keep              leave the launched browser (and its profile) running
+
+A browser started with --launch is closed when the inspector is stopped, since it
+was opened for one look and its profile exists to be thrown away. Kill the
+browser instead and the inspector goes with it: it is a script inside the page.
+The CLI notices the socket closing and exits on its own.
   --list              list inspectable pages and exit
   --status            report what the inspector found, without starting one
   --stop              remove the inspector from the page
@@ -65,8 +71,8 @@ start it yourself:
 function parseArgs(argv) {
   const options = {
     url: null, port: 9222, host: '127.0.0.1', launch: false, headed: null,
-    chrome: null, distance: null, wait: 15, borrow: true, watch: true, list: false,
-    status: false, stop: false, json: false, help: false,
+    chrome: null, distance: null, wait: 15, borrow: true, watch: true, keep: false,
+    list: false, status: false, stop: false, json: false, help: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -87,6 +93,7 @@ function parseArgs(argv) {
       case '--wait': case '-w': options.wait = Number(next()); break;
       case '--no-borrow': options.borrow = false; break;
       case '--once': case '--no-watch': options.watch = false; break;
+      case '--keep': options.keep = true; break;
       case '--list': options.list = true; break;
       case '--status': options.status = true; break;
       case '--stop': options.stop = true; break;
@@ -293,6 +300,11 @@ async function main() {
       say('the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to stop.');
       if (launched) {
         say(`the browser is a throwaway profile at ${launched.profile}; close the window when done.`);
+        if (!options.watch || options.json) {
+          // Nothing is watching for the browser to exit, so this profile is the
+          // one case the tool cannot collect behind itself.
+          say('--once does not stay to clean that up: the profile goes when you delete it.');
+        }
       }
     }
 
@@ -327,13 +339,23 @@ async function main() {
       if (!options.json) say('watching for reloads. Ctrl-C to stop.');
       // Hold the process open: the session has to stay alive for any of this
       // to keep working.
-      await new Promise((resolve) => {
-        process.on('SIGINT', resolve);
-        process.on('SIGTERM', resolve);
-        session.onClosed = resolve;
-        session.socket?.addEventListener('close', resolve);
+      const reason = await new Promise((resolve) => {
+        process.on('SIGINT', () => resolve('stopped'));
+        process.on('SIGTERM', () => resolve('stopped'));
+        session.onClosed = () => resolve('the browser closed');
+        session.socket?.addEventListener('close', () => resolve('the browser closed'));
       });
+
       session.close();
+      // Whatever it launched, it closes: a browser started for one look, with a
+      // profile that exists to be thrown away, should not outlive the thing that
+      // opened it. --keep leaves it (and then the profile is yours to remove).
+      if (launched && !options.keep) {
+        if (!options.json) say(`${reason}: closing the browser it launched.`);
+        await launched.cleanup();
+      } else if (launched && !options.json) {
+        say(`${reason}: leaving the browser running; its profile is at ${launched.profile}.`);
+      }
       return 0;
     }
 

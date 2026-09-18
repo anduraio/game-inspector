@@ -101,6 +101,9 @@ export async function launchChrome({
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
+    // A browser that gets killed rather than quit offers to restore the session
+    // next time, which for a profile that exists to be thrown away is noise.
+    '--disable-session-crashed-bubble',
     '--disable-features=Translate,AcceptCHFrame',
     // A game being inspected is a game whose requestAnimationFrame is being
     // watched, so Chrome's habit of throttling a window it thinks is in the
@@ -117,6 +120,17 @@ export async function launchChrome({
   const child = spawn(binary, args, { stdio: 'ignore', detached: false });
   let cleaned = false;
 
+  // The profile is only interesting while the browser is using it. Removing it
+  // here rather than at the end of the caller's run means a browser that dies
+  // on its own -- which is the normal way a browser you were using ends -- does
+  // not leave a directory behind for nobody to collect.
+  const wipe = () => {
+    try {
+      rmSync(profile, { recursive: true, force: true });
+    } catch { /* in a temp dir, and losing the race is not a problem */ }
+  };
+  child.on('exit', wipe);
+
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
@@ -124,9 +138,7 @@ export async function launchChrome({
       if (!child.killed) child.kill('SIGTERM');
     } catch { /* already gone */ }
     await sleep(150);
-    try {
-      rmSync(profile, { recursive: true, force: true });
-    } catch { /* the profile is in a temp dir; losing the race is not a problem */ }
+    wipe();
   };
 
   child.on('error', () => {});
