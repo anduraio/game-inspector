@@ -50,20 +50,18 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | `R` / Reset view | point the inspector back at wherever the game is looking now |
 | `Esc` | stop |
 
-## Why this is not the harness
+## Why this is not a test harness
 
 A test harness drives a game through a handle and returns a pass or a fail. It
 runs unattended, and it is the thing that decides whether a build is good.
 
 This is the opposite, on purpose. It needs a person, it produces no verdict, and
-"it looked fine" is not a test result. Keeping them in separate repositories is
-the same boundary drawn a second time, in the place where it cannot be crossed by
-accident: an inspector that quietly became part of the test suite would be worse
-than no inspector at all.
+"it looked fine" is not a test result. The boundary is drawn where it cannot be
+crossed by accident: an inspector that quietly became part of the test suite
+would be worse than no inspector at all.
 
-They share no code. The scene maths (`worldBounds`, `sceneStats`, projection) is
-written twice, and that is the deliberate cost of the two repos not depending on
-each other. If a third thing ever needs it, that is the moment to extract it.
+The scene maths (`worldBounds`, `sceneStats`, projection) is not exported
+either. If a second thing ever needs it, that is the moment to extract it.
 
 ## How it finds anything
 
@@ -176,10 +174,10 @@ attach is not enough, because the answer moves: `R` — and coming back from
 playing, which hands the camera to the game and lets it drive off somewhere else
 — re-reads the game's camera instead of restoring the pose it had at the start.
 A game that streams its world makes this the difference between an inspector and
-a view of bare ground: The game generates track ahead of the player and retires
-the lanes behind them, so a fixed pose ends up over ground the game has taken
-away, with the game off the top of the frame. The zoom you set is left alone;
-only the aim is re-asked.
+a view of bare ground: content produced ahead of the player is retired behind
+them, so a fixed pose ends up over ground the game has taken away, with the game
+off the top of the frame. The zoom you set is left alone; only the aim is
+re-asked.
 
 **It will build a renderer if it has to.** If the game's renderer is reachable it
 uses that one, so the picture is the game's picture. If it is not — common, since

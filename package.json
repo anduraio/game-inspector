@@ -1,9 +1,21 @@
 {
   "name": "game-inspector",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Attach to a running Three.js game over CDP and fly around its scene. No game adapter, no dependencies, no build step.",
+  "license": "MIT",
+  "author": "anduraio",
+  "homepage": "https://github.com/anduraio/game-inspector#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anduraio/game-inspector.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anduraio/game-inspector/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "game-inspector": "./src/cli.js"
   },
@@ -25,6 +37,5 @@
     "cdp",
     "devtools",
     "game"
-  ],
-  "license": "UNLICENSED"
+  ]
 }

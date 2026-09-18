@@ -249,11 +249,11 @@
    *
    * Asked more than once on purpose. The answer is not a fixed place: a game
    * that streams its world moves the ground out from under a pose that never
-   * changes. The game generates track ahead of the player and retires the
-   * lanes behind them, so the spot the game's camera started from becomes bare
-   * ground with the game off the top of the frame, and a pose captured once at
-   * attach is wrong from the moment the player starts running. Asking again is
-   * what keeps "back to where the game is looking" true while the game plays.
+   * changes, because content produced ahead of the player is retired behind
+   * them. The spot the game's camera started from becomes bare ground with the
+   * game off the top of the frame, and a pose captured once at attach is wrong
+   * from the moment the player starts running. Asking again is what keeps "back
+   * to where the game is looking" true while the game plays.
    *
    * The distance is deliberately left alone: that is your zoom, not the game's.
    */
