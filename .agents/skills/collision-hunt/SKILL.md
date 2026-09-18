@@ -98,6 +98,10 @@ rows of baby under the same rail is one thing to look at.
 
 - `scan --ages 1,75 --rows 20` — narrower or longer walk.
 - `frame --headed` — watch the shot being taken; `--distance 6` for a wider frame.
+- `--revert-ground` — put the body back on `y = 0`, the way it was before the
+  ground fix, and nothing else. A scan or a frame run both ways is how the scan
+  is shown catching the bug it was built for: 0.41 on every lane row for every
+  body, against the rails-only result with the fix in.
 - `HUNT_SEED` — the crossing to walk (default 7). Two runs with one seed see the
   same lanes, which is what makes a before and an after comparable.
 - `GAME_URL`, `GAME_INSPECTOR`, `HUNT_PORT`, `HUNT_SHOTS` — page, tool path,

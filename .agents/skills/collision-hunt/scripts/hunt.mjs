@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const INSPECTOR = process.env.GAME_INSPECTOR || join(homedir(), 'Code/game-inspector');
 const GAME_URL = process.env.GAME_URL || 'http://localhost:5173/';
+const SEED = process.env.HUNT_SEED || '7';   // one crossing, so two runs see the same rows
 const PORT = Number(process.env.HUNT_PORT || 9350);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHOTS = resolve(process.env.HUNT_SHOTS || join(process.cwd(), 'collision-shots'));
@@ -41,7 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** A browser of its own, on its own port, with the game loaded and ready. */
 async function open(opts) {
-  const url = `${GAME_URL}${GAME_URL.includes('?') ? '&' : '?'}paused=1`;
+  const url = `${GAME_URL}${GAME_URL.includes('?') ? '&' : '?'}seed=${SEED}&paused=1`;
   const { cleanup } = await launchChrome({
     url,
     port: PORT,
@@ -55,6 +56,12 @@ async function open(opts) {
   for (let i = 0; i < 120; i++) {
     if (await session.evaluate('!!(window.AAL && window.AAL.player)')) break;
     await sleep(250);
+  }
+  // --revert-ground puts the body back on y = 0, the way it was before the ground
+  // fix. Nothing else changes, so a scan run both ways is a demonstration that
+  // the scan catches the bug it was built for rather than a story about it.
+  if (opts['revert-ground']) {
+    await session.evaluate("Object.defineProperty(AAL.player, 'groundY', { get: () => 0, configurable: true }); 'reverted'");
   }
   return { session, cleanup };
 }
@@ -91,9 +98,11 @@ async function frame(opts) {
   const phase = opts.phase === 'after' ? 'after' : 'before';
   const { session, cleanup } = await open(opts);
   try {
+    // Without a row, stand it on a lane: that is where a body meets the track.
     const parked = JSON.parse(await session.evaluate(`(() => {
       const age = ${opts.age ? Number(opts.age) : 'null'};
-      const row = ${opts.row ? Number(opts.row) : 0};
+      const lanes = AAL.track.lanes.map((l) => l.row).sort((a, b) => a - b);
+      const row = ${opts.row ? Number(opts.row) : '(lanes[1] ?? lanes[0] ?? 0)'};
       const col = ${opts.col ? Number(opts.col) : 2};
       return import('/scripts/collide.js').then((m) => JSON.stringify(m.probe({ age, row, col })));
     })()`));
