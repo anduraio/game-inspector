@@ -226,7 +226,7 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 61 checks, in a real browser
+npm test        # 64 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and

@@ -269,6 +269,36 @@ async function main() {
       `document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('.info').textContent.includes('hold')`,
     ));
 
+    // --- keys work while the panel has focus ------------------------------
+    // Pressing a button leaves it focused, so every key typed afterwards arrives
+    // with the panel in its path. The shield used to read that as "not mine",
+    // which meant Hold worked once and then P did nothing until you clicked
+    // somewhere else.
+    await session.evaluate(`(() => {
+      const shadow = document.querySelector('div[style*="2147483001"]').shadowRoot;
+      shadow.querySelector('button[data-act="pause"]').focus();
+      return 1;
+    })()`);
+    expect('focus really is inside the panel when this runs',
+      (await session.evaluate(`document.querySelector('div[style*="2147483001"]').shadowRoot.activeElement?.dataset?.act`)) === 'pause',
+      await session.evaluate(`document.querySelector('div[style*="2147483001"]').shadowRoot.activeElement?.tagName`));
+
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(false); window.__GAME_INSPECTOR__.updatePanel(); 1');
+    await session.evaluate(`document.querySelector('div[style*="2147483001"]').shadowRoot.querySelector('button[data-act="pause"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', bubbles: true, composed: true }))`);
+    expect('P still works with the panel focused',
+      await session.evaluate('window.__GAME_INSPECTOR__.state.frozen') === true,
+      `frozen=${await session.evaluate('window.__GAME_INSPECTOR__.state.frozen')}`);
+
+    // And a key the inspector has no opinion about is left alone rather than
+    // swallowed for being on the wrong list.
+    const tabPrevented = await session.evaluate(`(() => {
+      const event = new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true, cancelable: true, composed: true });
+      document.body.dispatchEvent(event);
+      return event.defaultPrevented;
+    })()`);
+    expect('a key the inspector does not use is not swallowed', tabPrevented === false, `defaultPrevented=${tabPrevented}`);
+    await session.evaluate('window.__GAME_INSPECTOR__.pause(false); 1');
+
     // --- playing the game rather than looking at it ---------------------
     // The whole point of the mode: while inspecting, the inspector eats the
     // input; while playing, the game gets every event and the inspector paints

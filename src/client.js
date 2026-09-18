@@ -598,11 +598,15 @@
     // panel refresh lands on the nearest common ancestor instead of the button,
     // and reading dataset off that finds nothing. That is why a button could
     // look like it needed two taps.
-    const action = (event.composedPath?.() ?? [])
-      .map((node) => node?.dataset?.act)
-      .find(Boolean);
+    const path = event.composedPath?.() ?? [];
+    const action = path.map((node) => node?.dataset?.act).find(Boolean);
     if (!action) return;
     event.stopPropagation();
+    // A mouse click leaves the button focused and wearing a focus ring; a
+    // keyboard activation (detail 0) keeps both, since that is how it got here.
+    if (event.detail > 0) {
+      path.find((node) => node?.dataset?.act)?.blur?.();
+    }
     if (action === 'pause') { if (state.frozen) thaw(); else freeze(); }
     else if (action === 'reset') resetView();
     else if (action === 'stop') { stop(); return; }
@@ -809,8 +813,17 @@
       if (!state.active) return;
       // Playing means playing: the game gets every event, untouched.
       if (state.mode === 'play') return;
-      if (insidePanel(event)) return; // the panel is ours to click
-      handler(event);
+      if (insidePanel(event)) {
+        // A press on the panel is the panel's. A key is not: pressing a button
+        // leaves it focused, and everything typed afterwards arrives with the
+        // panel in its path. Only the two keys that work a button belong to it.
+        if (type !== 'keydown') return;
+        if (event.key === ' ' || event.key === 'Enter') return;
+      }
+      // A handler that did not use the event lets it go by, so tabbing, browser
+      // shortcuts and anything else the inspector has no opinion about still
+      // work rather than being swallowed for being on the wrong list.
+      if (handler(event) === false) return;
       event.stopPropagation();
       event.preventDefault?.();
     }, { capture: true, passive: false, ...options });
@@ -885,10 +898,11 @@
         case 'b': case 'B': state.showBounds = !state.showBounds; break;
         case 'c': case 'C': state.useComposer = !state.useComposer; break;
         case 'r': case 'R': resetView(); break;
-        case 'Escape': stop(); return;
-        default: return;
+        case 'Escape': stop(); return true;
+        default: return false; // not a key the inspector has an opinion about
       }
       updatePanel();
+      return true;
     });
   }
 
