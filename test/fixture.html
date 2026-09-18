@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>game-inspector fixture</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101418; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// A game shaped like a Three.js game and made of nothing.
+//
+// It exists so the inspector's selftest can drive a real browser against a
+// scene whose every number is known: one mesh dead centre, one off to the
+// side, a camera that records being aimed, and a renderer that records being
+// called. The matrices are identities on purpose -- the maths that matters is
+// tested against a real game, and what this proves is discovery, freezing,
+// camera takeover, picking and teardown.
+(() => {
+  const matrix = (x, y, z) => ({
+    elements: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]),
+  });
+
+  const identity = () => matrix(0, 0, 0);
+
+  function mesh(name, x, y, z, size) {
+    const half = size / 2;
+    return {
+      isMesh: true,
+      type: 'Mesh',
+      name,
+      visible: true,
+      children: [],
+      matrixWorld: matrix(x, y, z),
+      position: { x, y, z },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      geometry: {
+        boundingBox: {
+          min: { x: -half, y: -half, z: -half },
+          max: { x: half, y: half, z: half },
+        },
+        attributes: { position: { count: 36 } },
+      },
+      updateWorldMatrix() {},
+    };
+  }
+
+  const scene = {
+    isScene: true,
+    type: 'Scene',
+    name: 'fixture-scene',
+    visible: true,
+    children: [
+      mesh('centre', 0, 0, -5, 2),
+      mesh('aside', 2, 1, -5, 1),
+    ],
+    updateWorldMatrix() {},
+  };
+
+  const camera = {
+    isCamera: true,
+    type: 'PerspectiveCamera',
+    visible: true,
+    children: [],
+    position: {
+      x: 0, y: 5, z: 10,
+      set(x, y, z) { this.x = x; this.y = y; this.z = z; },
+    },
+    // Looking down -Z and slightly down: the third column of a world matrix is
+    // where the camera's own +Z points, which is backwards.
+    matrixWorld: {
+      elements: new Float64Array([1, 0, 0, 0, 0, 0.894, -0.447, 0, 0, 0.447, 0.894, 0, 0, 5, 10, 1]),
+    },
+    matrixWorldInverse: identity(),
+    projectionMatrix: identity(),
+    lookAtCalls: 0,
+    lastLookAt: null,
+    lookAt(x, y, z) { this.lookAtCalls++; this.lastLookAt = { x, y, z }; },
+    updateMatrixWorld() {},
+    updateWorldMatrix() {},
+  };
+
+  const renderer = {
+    domElement: document.getElementById('game'),
+    info: { render: {} },
+    calls: 0,
+    lastScene: null,
+    lastCamera: null,
+    render(s, c) { this.calls++; this.lastScene = s; this.lastCamera = c; },
+  };
+
+  let frames = 0;
+  function tick() {
+    frames++;
+    window.__fixtureFrames = frames;
+    window.requestAnimationFrame(tick);
+  }
+  window.requestAnimationFrame(tick);
+
+  // Two shapes of game, because the inspector has to cope with both.
+  //
+  // By default the game exposes its renderer, like a game that was written to
+  // be inspected. With ?no-renderer it keeps the renderer to itself -- which is
+  // what a game does by accident, since there is usually no reason to put it on
+  // a global -- and offers a Three.js namespace instead, so the inspector has to
+  // build a renderer of its own.
+  const params = new URLSearchParams(location.search);
+
+  if (params.has('no-renderer')) {
+    window.THREE = {
+      // A namespace is recognised by having a renderer and a scene in it: the
+      // renderer because that is what the inspector needs, and a second known
+      // export so that some unrelated object with a WebGLRenderer method is not
+      // mistaken for Three.js.
+      Scene: class Scene {},
+      PCFSoftShadowMap: 2,
+      ACESFilmicToneMapping: 4,
+      WebGLRenderer: class WebGLRenderer {
+        constructor({ canvas }) {
+          this.domElement = canvas;
+          this.shadowMap = { enabled: false, type: 0 };
+          this.calls = 0;
+          this.width = 0;
+          this.height = 0;
+          window.__ownRenderer = this;
+        }
+
+        setPixelRatio() {}
+        setSize(w, h) { this.width = w; this.height = h; }
+        render() { this.calls++; }
+        dispose() { window.__ownRendererDisposed = true; }
+      },
+    };
+    window.game = { scene, camera, frames: () => frames };
+    // The renderer is not left anywhere the inspector can reach, which is the
+    // whole point of this mode. A test global that held it would quietly make
+    // this fixture the other fixture.
+    window.__fixture = { scene, camera, frames: () => frames };
+  } else {
+    window.game = { scene, camera, renderer, frames: () => frames };
+    window.__fixture = { scene, camera, renderer, frames: () => frames };
+  }
+})();
+</script>
+</body>
+</html>

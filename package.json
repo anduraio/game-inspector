@@ -1,0 +1,30 @@
+{
+  "name": "game-inspector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Attach to a running Three.js game over CDP and fly around its scene. No game adapter, no dependencies, no build step.",
+  "bin": {
+    "game-inspector": "./src/cli.js"
+  },
+  "exports": {
+    ".": "./src/cli.js",
+    "./cdp": "./src/cdp.js",
+    "./chrome": "./src/chrome.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/selftest.mjs"
+  },
+  "keywords": [
+    "three",
+    "inspector",
+    "cdp",
+    "devtools",
+    "game"
+  ],
+  "license": "UNLICENSED"
+}
