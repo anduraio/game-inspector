@@ -299,6 +299,36 @@ async function main() {
     expect('a key the inspector does not use is not swallowed', tabPrevented === false, `defaultPrevented=${tabPrevented}`);
     await session.evaluate('window.__GAME_INSPECTOR__.pause(false); 1');
 
+    // --- a held key flies the target ------------------------------------
+    // The keys used to move the target once per keypress, so travel rode key
+    // repeat: half a second of nothing, then lurches at the operating system's
+    // rate. They are read every frame now, and the movement is flat, which is
+    // what a steeply pitched camera needs it to be.
+    const state0 = () => session.evaluate('JSON.stringify(window.__GAME_INSPECTOR__.state)');
+    const keyDown = (key) => session.evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', code: 'Key${key.toUpperCase()}', bubbles: true, cancelable: true }))`);
+    const keyUp = (key) => session.evaluate(`document.body.dispatchEvent(new KeyboardEvent('keyup', { key: '${key}', code: 'Key${key.toUpperCase()}', bubbles: true, cancelable: true }))`);
+
+    await session.evaluate('window.__GAME_INSPECTOR__.state.pitch = 1.2; window.__GAME_INSPECTOR__.state.yaw = 0; 1');
+    const hold = JSON.parse(await state0());
+    await keyDown('w');
+    await sleep(400);
+    const during = JSON.parse(await state0());
+    await keyUp('w');
+    await sleep(250);
+    const released = JSON.parse(await state0());
+
+    const across = Math.hypot(during.target.x - hold.target.x, during.target.z - hold.target.z);
+    const within = hold.distance * 0.5;
+    expect('holding a key flies the target while it is down',
+      across > within * 0.2 && across < within * 2,
+      `moved ${across.toFixed(2)} across the ground in 400ms at distance ${hold.distance.toFixed(1)}`);
+    expect('and the flight is flat, whatever the pitch',
+      Math.abs(during.target.y - hold.target.y) < hold.distance * 0.02,
+      `target rose ${(during.target.y - hold.target.y).toFixed(3)} while pitched at ${hold.pitch}`);
+
+    const drift = Math.hypot(released.target.x - during.target.x, released.target.z - during.target.z);
+    expect('releasing it stops the flight', drift < hold.distance * 0.02, `drifted ${drift.toFixed(3)} after the key came up`);
+
     // --- playing the game rather than looking at it ---------------------
     // The whole point of the mode: while inspecting, the inspector eats the
     // input; while playing, the game gets every event and the inspector paints

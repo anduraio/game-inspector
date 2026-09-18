@@ -39,7 +39,7 @@ the panel is in the top-left of the page. drag to orbit, wheel to zoom, Esc to s
 | drag | orbit |
 | wheel | zoom |
 | right-drag / shift-drag | pan |
-| `WASD` `QE` | fly the target |
+| `WASD` `QE` | fly the target: hold to fly, `QE` is height |
 | arrows | orbit |
 | click | pick an object and box it |
 | `P` / Hold | hold the world still while you look at it (the button says Resume while held) |
@@ -286,7 +286,7 @@ touched. To do it yourself:
 ## Testing it
 
 ```bash
-npm test        # 78 checks, in a real browser
+npm test        # 81 checks, in a real browser
 ```
 
 The selftest starts a browser, loads a fixture shaped like a Three.js game, and
@@ -309,9 +309,11 @@ camera it found was a light's shadow camera, freezing the loop killed it
 permanently instead of pausing it, the whole search never looked past the first
 object because a local variable shadowed the depth it was given, Reset view used
 to frame the entire scene — which on a scene with a large ground and a sky dome
-means pointing the camera at the sky — and a game that kept its renderer private
+means pointing the camera at the sky — a game that kept its renderer private
 had its scene painted twice a frame, once by the game and once by the inspector,
-with no way to say so in a test.
+with no way to say so in a test, and the fly keys moved the target once per
+keypress, which meant travel rode key repeat and, on a game whose camera looks
+down at sixty degrees, mostly drove the pivot into the ground.
 
 One more came out of using it on a game rather than a fixture: coming back from
 playing left the camera where the game's camera had been at attach, which on a

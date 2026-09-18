@@ -582,8 +582,13 @@
     ownRenderer.setSize(window.innerWidth, window.innerHeight, false);
   }
 
+  let flyMark = 0;
+
   function renderFrame() {
     if (!state.active) return;
+    const now = performance.now();
+    const dt = flyMark ? Math.min(0.1, (now - flyMark) / 1000) : 0;
+    flyMark = now;
     // Playing: the game has its camera and its draw call back, so there is
     // nothing for the inspector to paint. The loop keeps ticking for the panel.
     if (state.mode === 'play') {
@@ -592,6 +597,7 @@
       rafId = realRAF(renderFrame);
       return;
     }
+    fly(dt);
     applyCamera();
     try {
       if (state.useComposer && drawComposer) drawComposer();
@@ -825,6 +831,9 @@
     if (mode === state.mode) return;
     state.mode = mode;
     host.dataset.mode = mode;
+    // Keys held across a mode change are not held any more: the game gets the
+    // keyboard in play mode, so nothing would come along to let them go.
+    flying.clear();
 
     if (mode === 'play') {
       // A game you are playing has to be running, and it has to paint.
@@ -1025,31 +1034,39 @@
     });
 
     shield('keydown', (event) => {
-      const step = state.distance * 0.06;
-      const { forward, right } = basis();
-      switch (event.key) {
-        case 'w': moveTarget(forward, step); break;
-        case 's': moveTarget(forward, -step); break;
-        case 'a': moveTarget(right, -step); break;
-        case 'd': moveTarget(right, step); break;
-        case 'q': case 'PageDown': moveY(-step); break;
-        case 'e': case 'PageUp': moveY(step); break;
-        case 'ArrowUp': orbit(0, -8); break;
-        case 'ArrowDown': orbit(0, 8); break;
-        case 'ArrowLeft': orbit(-8, 0); break;
-        case 'ArrowRight': orbit(8, 0); break;
+      const key = event.key.toLowerCase();
+      // The keys that fly the target are held, not stepped: they are read every
+      // frame while they are down, which is the difference between a camera that
+      // follows the hand and one that moves in key-repeat-sized lurches. See fly().
+      if (FLY_KEYS.has(key)) {
+        flying.add(key);
+        return true;
+      }
+      switch (key) {
+        case 'arrowup': orbit(0, -8); break;
+        case 'arrowdown': orbit(0, 8); break;
+        case 'arrowleft': orbit(-8, 0); break;
+        case 'arrowright': orbit(8, 0); break;
         case '+': case '=': dolly(0.9); break;
         case '-': case '_': dolly(1.1); break;
-        case 'f': case 'F': case 'p': case 'P': state.frozen ? thaw() : freeze(); break;
-        case 'b': case 'B': state.showBounds = !state.showBounds; break;
-        case 'c': case 'C': state.useComposer = !state.useComposer; break;
-        case 'r': case 'R': resetView(); break;
-        case 'Escape': stop(); return true;
+        case 'f': case 'p': state.frozen ? thaw() : freeze(); break;
+        case 'b': state.showBounds = !state.showBounds; break;
+        case 'c': state.useComposer = !state.useComposer; break;
+        case 'r': resetView(); break;
+        case 'escape': stop(); return true;
         default: return false; // not a key the inspector has an opinion about
       }
       updatePanel();
       return true;
     });
+
+    // The other half of a held key. Without it the target keeps flying after the
+    // key is up, which is worse than the stutter it replaced.
+    shield('keyup', (event) => flying.delete(event.key.toLowerCase()));
+
+    // A key held while the window loses focus never comes back up here, and a
+    // target that flies away on its own is the worst version of this bug.
+    listen(window, 'blur', () => flying.clear(), { capture: true });
   }
 
   function orbit(dx, dy) {
@@ -1076,6 +1093,41 @@
 
   function moveY(amount) {
     state.target.y += amount;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Flying the target
+  //
+  // Held keys move the target every frame, not once per keypress. Key repeat is
+  // a bad flight control: it waits half a second before it does anything, then
+  // arrives at the operating system's rate rather than the frame rate, so the
+  // same hold is a stall, then a jump, then a stutter. Per frame it is smooth,
+  // and at dt seconds a frame it is the same speed on a fast machine and a slow
+  // one instead of one that depends on a repeat delay.
+  //
+  // The movement is flat as well. `forward` in the camera's basis carries the
+  // pitch, and a game that stands its camera high over the player -- this one
+  // looks down at sixty degrees -- spends most of a forward press driving the
+  // pivot into the ground and very little of it crossing the ground. Q and E
+  // keep the vertical, which is the one movement that should be vertical.
+  // ---------------------------------------------------------------------------
+
+  const flying = new Set();
+  const FLY_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'pageup', 'pagedown']);
+  const FLY_SPEED = 0.9; // target-lengths per second, at any distance
+
+  function fly(dt) {
+    if (!flying.size) return;
+    const forward = { x: -Math.sin(state.yaw), y: 0, z: -Math.cos(state.yaw) };
+    const right = { x: -forward.z, y: 0, z: forward.x };
+    const step = dt * state.distance * FLY_SPEED;
+    if (flying.has('w')) moveTarget(forward, step);
+    if (flying.has('s')) moveTarget(forward, -step);
+    if (flying.has('a')) moveTarget(right, -step);
+    if (flying.has('d')) moveTarget(right, step);
+    const rise = (flying.has('e') || flying.has('pageup') ? 1 : 0)
+      - (flying.has('q') || flying.has('pagedown') ? 1 : 0);
+    if (rise) moveY(step * rise);
   }
 
   /** Frame what is actually drawn, ignoring the sky-sized things around it. */
